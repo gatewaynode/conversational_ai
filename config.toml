@@ -1,0 +1,16 @@
+[server]
+host = "127.0.0.1"
+port = 8000
+
+[tts]
+model = "mlx-community/Kokoro-82M-bf16"
+voice = "af_heart"
+speed = 1.0
+lang_code = "a"
+
+[stt]
+model = "mlx-community/whisper-large-v3-turbo-asr-fp16"
+
+[limits]
+max_text_length = 5000
+max_audio_file_size = 26214400  # 25 MB
