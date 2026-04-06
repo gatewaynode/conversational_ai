@@ -132,3 +132,48 @@ def test_health_response_degraded() -> None:
     r = HealthResponse(status="degraded", tts_loaded=False, stt_loaded=True)
     assert r.status == "degraded"
     assert r.tts_loaded is False
+
+
+# ---------------------------------------------------------------------------
+# Voice and lang_code validation
+# ---------------------------------------------------------------------------
+
+
+def test_tts_request_valid_voice_formats() -> None:
+    TTSRequest(text="hi", voice="af_heart")
+    TTSRequest(text="hi", voice="en-us-male")
+    TTSRequest(text="hi", voice="Speaker1")
+    TTSRequest(text="hi", voice="a")
+
+
+def test_tts_request_voice_with_invalid_chars_raises() -> None:
+    with pytest.raises(ValidationError, match="voice"):
+        TTSRequest(text="hi", voice="../../evil")
+
+
+def test_tts_request_voice_too_long_raises() -> None:
+    with pytest.raises(ValidationError, match="voice"):
+        TTSRequest(text="hi", voice="a" * 65)
+
+
+def test_tts_request_valid_lang_code_formats() -> None:
+    TTSRequest(text="hi", lang_code="a")
+    TTSRequest(text="hi", lang_code="en")
+    TTSRequest(text="hi", lang_code="en-US")
+
+
+def test_tts_request_lang_code_with_invalid_chars_raises() -> None:
+    with pytest.raises(ValidationError, match="lang_code"):
+        TTSRequest(text="hi", lang_code="en_US")  # underscore not allowed
+
+
+def test_tts_request_lang_code_too_long_raises() -> None:
+    with pytest.raises(ValidationError, match="lang_code"):
+        TTSRequest(text="hi", lang_code="a" * 11)
+
+
+def test_tts_request_none_voice_and_lang_code_ok() -> None:
+    """None values must still pass — route falls back to config defaults."""
+    r = TTSRequest(text="hi", voice=None, lang_code=None)
+    assert r.voice is None
+    assert r.lang_code is None

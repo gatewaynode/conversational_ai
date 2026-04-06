@@ -59,9 +59,48 @@
 - [x] Pin transformers==5.3.0 (5.5.0 had mistral_common ReasoningEffort import bug)
 - [x] Play output WAV — audio quality confirmed
 
-## Review
+## Review — Server (Phases 1–8)
 
-All 79 tests passing. Live round-trip results:
-- "Hello, can you hear me?"                      → " Hello, can you hear me?" ✓
-- "The quick brown fox jumps over the lazy dog."  → " The quick brown fox jumps over the lazy dog." ✓
-- "Good morning! How are you feeling today?"      → " Good morning, how are you feeling today?" ✓
+All 90 tests passing (79 original + 11 from security hardening). Live round-trip verified.
+
+---
+
+## Phase 9: CLI Foundation
+
+- [ ] Add `click==8.1.8` and `watchdog==6.0.0` to `pyproject.toml`
+- [ ] Run `uv sync` to install new deps
+- [ ] Create `src/cli/__init__.py` — Click group with global options, config/model loading on `ctx.obj`
+- [ ] Create `cli.py` — entry point importing the Click group
+- [ ] Add `generate_tts_streaming()` method to `src/models.py` — yields chunks instead of collecting
+- [ ] Create `src/cli/audio_io.py` — `play_tts_streaming()` (uses mlx-audio AudioPlayer) and `MicRecorder` (sounddevice + RMS VAD)
+
+## Phase 10: Simple Subcommands
+
+- [ ] Create `src/cli/speak.py` — text from arg/stdin/file → TTS → speakers
+- [ ] Create `src/cli/transcribe.py` — mic → STT → stdout/file
+- [ ] Wire `serve` subcommand to wrap `main.py` app factory + uvicorn
+- [ ] Test: `cai speak "hello"` plays audio
+- [ ] Test: `cai transcribe` records and prints text
+- [ ] Test: `cai serve` starts the API server
+
+## Phase 11: File-Based Modes
+
+- [ ] Create `src/cli/watch.py` — watchdog observer, byte offset tracking, debounce, TTS playback
+- [ ] Create `src/cli/listen.py` — continuous mic → STT → append to file loop
+- [ ] Test: `cai watch test.txt` + append to file → speaks new content
+- [ ] Test: `cai listen out.txt` + speak → text appears in file
+
+## Phase 12: Dialogue Mode
+
+- [ ] Create `src/cli/dialogue.py` — threaded watcher + listener with inference lock
+- [ ] Test: `cai dialogue --speak-file a.txt --listen-file b.txt` runs both directions
+- [ ] Verify graceful shutdown on Ctrl+C (no deadlocks, threads join cleanly)
+
+## Phase 13: Integration & Polish
+
+- [ ] Update `install.sh` — `cai` shim calls `cli.py` instead of `main.py`
+- [ ] Update `README.md` with CLI usage section
+- [ ] Write `tests/test_cli_audio_io.py` — unit tests for VAD logic, file offset tracking
+- [ ] Write CLI subcommand tests using Click CliRunner (mock ModelManager)
+- [ ] Verify all existing server tests still pass (`uv run pytest`)
+- [ ] End-to-end verification of all 6 subcommands

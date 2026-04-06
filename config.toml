@@ -1,6 +1,6 @@
 [server]
 host = "127.0.0.1"
-port = 8000
+port = 4114
 
 [tts]
 model = "mlx-community/Kokoro-82M-bf16"
@@ -14,3 +14,7 @@ model = "mlx-community/whisper-large-v3-turbo-asr-fp16"
 [limits]
 max_text_length = 5000
 max_audio_file_size = 26214400  # 25 MB
+
+[log]
+log_dir = "~/.local/state/conversational_ai"
+max_age_days = 7

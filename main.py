@@ -13,12 +13,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import Settings, build_settings
+from src.logging_setup import setup_logging
 from src.middleware import LimitsHeaderMiddleware
 from src.models import ModelManager
 from src.routes.stt import router as stt_router
 from src.routes.system import router as system_router
 from src.routes.tts import router as tts_router
 
+# Minimal bootstrap so import-time errors are visible before settings load.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
@@ -81,9 +83,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--config",
         type=Path,
-        default=Path("config.toml"),
+        default=None,
         metavar="PATH",
-        help="Path to TOML config file.",
+        help="Path to TOML config file (default: ~/.config/conversational_ai/config.toml).",
     )
     p.add_argument("--host", default=None, help="Bind address.")
     p.add_argument("--port", type=int, default=None, help="Port number.")
@@ -142,6 +144,16 @@ def main() -> None:
         toml_path=args.config,
         cli_overrides=_cli_overrides(args),
     )
+
+    setup_logging(settings.log)
+
+    _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+    if settings.server.host not in _LOOPBACK:
+        logger.warning(
+            "Server is bound to %s — the API is network-accessible with NO authentication. "
+            "Ensure this is intentional.",
+            settings.server.host,
+        )
 
     logger.info(
         "Starting server on %s:%d | TTS: %s | STT: %s",

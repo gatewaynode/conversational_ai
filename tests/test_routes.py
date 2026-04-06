@@ -299,6 +299,87 @@ def test_stt_503_when_model_not_loaded() -> None:
     assert resp.status_code == 503
 
 
+def test_stt_unknown_extension_falls_back_to_wav() -> None:
+    """Files with non-audio extensions (.xyz) must use .wav as the temp suffix."""
+    used_suffixes: list[str] = []
+    original_save = __import__("src.audio", fromlist=["save_temp_audio"]).save_temp_audio
+
+    def tracking_save(data: bytes, suffix: str = ".wav") -> Path:
+        used_suffixes.append(suffix)
+        return original_save(data, suffix)
+
+    import src.routes.stt as stt_module
+    original = stt_module.save_temp_audio
+    stt_module.save_temp_audio = tracking_save
+    try:
+        TestClient(_make_app()).post(
+            "/v1/stt",
+            files={"file": ("payload.xyz", _minimal_wav(), "audio/wav")},
+        )
+    finally:
+        stt_module.save_temp_audio = original
+
+    assert used_suffixes == [".wav"], f"Expected .wav fallback, got {used_suffixes}"
+
+
+def test_stt_known_extension_is_preserved() -> None:
+    """Files with a known audio extension (.mp3) must keep that suffix."""
+    used_suffixes: list[str] = []
+    original_save = __import__("src.audio", fromlist=["save_temp_audio"]).save_temp_audio
+
+    def tracking_save(data: bytes, suffix: str = ".wav") -> Path:
+        used_suffixes.append(suffix)
+        return original_save(data, suffix)
+
+    import src.routes.stt as stt_module
+    original = stt_module.save_temp_audio
+    stt_module.save_temp_audio = tracking_save
+    try:
+        TestClient(_make_app()).post(
+            "/v1/stt",
+            files={"file": ("clip.mp3", _minimal_wav(), "audio/mpeg")},
+        )
+    finally:
+        stt_module.save_temp_audio = original
+
+    assert used_suffixes == [".mp3"], f"Expected .mp3, got {used_suffixes}"
+
+
+def test_tts_inference_error_returns_500() -> None:
+    """An unhandled exception from the model must return 500, not leak a traceback."""
+
+    class BrokenTTSManager(FakeModelManager):
+        def generate_tts(self, text, voice, speed, lang_code):
+            raise RuntimeError("GPU out of memory")
+
+    app = _make_app()
+    app.state.model_manager = BrokenTTSManager()
+    resp = TestClient(app).post("/v1/tts", json={"text": "hello"})
+    assert resp.status_code == 500
+    body = resp.json()
+    assert "GPU" not in body.get("detail", "")  # internals must not leak
+    assert "inference failed" in body["detail"].lower()
+
+
+def test_stt_inference_error_returns_500() -> None:
+    """An unhandled exception from the STT model must return 500."""
+
+    class BrokenSTTManager(FakeModelManager):
+        def generate_stt(self, audio_path):
+            raise RuntimeError("Tokenizer not loaded")
+
+    app = _make_app()
+    app.state.model_manager = BrokenSTTManager()
+    resp = TestClient(app).post(
+        "/v1/stt",
+        files={"file": ("test.wav", _minimal_wav(), "audio/wav")},
+    )
+    assert resp.status_code == 500
+    body = resp.json()
+    assert "Tokenizer" not in body.get("detail", "")  # internals must not leak
+    assert "inference failed" in body["detail"].lower()
+
+
 def test_stt_cleans_up_temp_file() -> None:
     """Temp file must be deleted after transcription completes."""
     created: list[Path] = []

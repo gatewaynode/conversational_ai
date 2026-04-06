@@ -1,8 +1,15 @@
-# Architecture: Conversational AI — TTS/STT API Server
+# Architecture: Conversational AI — TTS/STT Server & CLI
 
 ## Overview
 
-A localhost-only FastAPI server that wraps `mlx-audio` for text-to-speech and speech-to-text inference on Apple Silicon. Consumed by a Chrome web page via REST endpoints.
+A localhost-only TTS/STT platform for Apple Silicon, built on `mlx-audio`. Two interfaces
+share the same model layer and configuration:
+
+1. **HTTP API Server** — FastAPI endpoints consumed by web pages and HTTP clients.
+2. **CLI** — Click-based terminal interface with speaker output, microphone input,
+   file watching, and a dialogue mode.
+
+Both are accessed through the unified `cai` command (`cai serve`, `cai speak`, etc.).
 
 ---
 
@@ -11,24 +18,39 @@ A localhost-only FastAPI server that wraps `mlx-audio` for text-to-speech and sp
 ```
 conversational_ai/
 ├── pyproject.toml              # Dependencies, project metadata
-├── config.toml                 # Default configuration
-├── main.py                     # Entry point: argparse, config, app factory, uvicorn
+├── config.toml                 # Default configuration (deprecated — XDG used)
+├── cli.py                      # Click entry point — unified `cai` command
+├── main.py                     # FastAPI app factory + uvicorn (used by `cai serve`)
+├── PRD.md                      # Product requirements document
+├── install.sh                  # Installs to ~/.local/share, creates ~/.local/bin/cai
 ├── src/
 │   ├── __init__.py
 │   ├── config.py               # TOML loading + CLI override merging (Pydantic Settings)
-│   ├── models.py               # ModelManager: singleton loader for TTS/STT models
-│   ├── audio.py                # Audio conversion (mx.array -> WAV bytes), file validation
+│   ├── models.py               # ModelManager: loader + inference for TTS/STT
+│   ├── audio.py                # WAV encoding, upload validation, temp files
 │   ├── schemas.py              # Pydantic request/response models
-│   └── routes/
-│       ├── __init__.py
-│       ├── tts.py              # POST /v1/tts
-│       ├── stt.py              # POST /v1/stt
-│       └── system.py           # GET /v1/health, GET /v1/models
+│   ├── middleware.py            # X-Limit-* response headers
+│   ├── logging_setup.py         # Log rotation + setup
+│   ├── routes/
+│   │   ├── __init__.py
+│   │   ├── tts.py              # POST /v1/tts
+│   │   ├── stt.py              # POST /v1/stt
+│   │   └── system.py           # GET /v1/health, GET /v1/models
+│   └── cli/
+│       ├── __init__.py         # Click group, shared startup (config + model loading)
+│       ├── audio_io.py         # Speaker playback + mic recording primitives
+│       ├── speak.py            # `cai speak` — text → TTS → speakers
+│       ├── transcribe.py       # `cai transcribe` — mic → STT → stdout
+│       ├── watch.py            # `cai watch` — file changes → TTS → speakers
+│       ├── listen.py           # `cai listen` — mic → STT → append to file
+│       └── dialogue.py         # `cai dialogue` — watch + listen simultaneously
 └── tests/
     ├── __init__.py
     ├── test_config.py
     ├── test_audio.py
-    └── test_routes.py
+    ├── test_schemas.py
+    ├── test_routes.py
+    └── test_cli_audio_io.py    # Unit tests for CLI audio primitives
 ```
 
 ---
@@ -37,8 +59,19 @@ conversational_ai/
 
 ```mermaid
 graph TB
-    subgraph "Chrome Page (localhost)"
-        Browser[Web Page]
+    subgraph "Clients"
+        Browser[Web Page<br/>localhost]
+        Terminal[Terminal<br/>cai CLI]
+    end
+
+    subgraph "Entry Points"
+        CLI_EP[cli.py<br/>Click group]
+        SERVE[cai serve]
+        SPEAK[cai speak]
+        TRANSCRIBE[cai transcribe]
+        WATCH[cai watch]
+        LISTEN[cai listen]
+        DIALOGUE[cai dialogue]
     end
 
     subgraph "FastAPI Server"
@@ -52,33 +85,45 @@ graph TB
         end
 
         Schemas[schemas.py<br/>Pydantic validation]
-        Audio[audio.py<br/>WAV conversion<br/>file validation]
+        Audio_Util[audio.py<br/>WAV conversion<br/>file validation]
+    end
 
-        subgraph "Model Layer"
-            MM[ModelManager<br/>on app.state]
-            TTS_M[TTS Model<br/>e.g. Kokoro]
-            STT_M[STT Model<br/>e.g. Whisper]
-        end
+    subgraph "CLI Audio I/O"
+        AudioIO[audio_io.py]
+        Player[AudioPlayer<br/>streaming TTS playback]
+        MicRec[MicRecorder<br/>VAD + recording]
+        FileWatch[watchdog<br/>FSEvents observer]
+    end
 
+    subgraph "Shared Layer"
         Config[config.py<br/>TOML + CLI merge]
+        MM[ModelManager]
+        TTS_M[TTS Model<br/>e.g. Kokoro]
+        STT_M[STT Model<br/>e.g. Whisper]
     end
 
     subgraph "External"
         MLX[mlx-audio library]
         HF[HuggingFace Hub<br/>model download]
+        SD[sounddevice<br/>PortAudio]
     end
 
     Browser -->|HTTP| CORS
+    Terminal --> CLI_EP
+    CLI_EP --> SERVE & SPEAK & TRANSCRIBE & WATCH & LISTEN & DIALOGUE
+    SERVE --> CORS
     CORS --> TTS_R & STT_R & SYS_R
-    TTS_R --> Schemas
-    STT_R --> Schemas
-    TTS_R --> Audio
-    STT_R --> Audio
-    TTS_R --> MM
-    STT_R --> MM
+    TTS_R --> Schemas & Audio_Util & MM
+    STT_R --> Schemas & Audio_Util & MM
+    SPEAK & WATCH & DIALOGUE --> AudioIO
+    TRANSCRIBE & LISTEN & DIALOGUE --> AudioIO
+    AudioIO --> Player & MicRec
+    WATCH & DIALOGUE --> FileWatch
+    AudioIO --> MM
     MM --> TTS_M & STT_M
     TTS_M & STT_M --> MLX
     MLX --> HF
+    Player & MicRec --> SD
     Config -->|startup| MM
 ```
 
@@ -218,11 +263,143 @@ CLI args map 1:1 and take precedence over the TOML file:
 
 ---
 
+---
+
+## CLI Architecture
+
+### Click Command Hierarchy
+
+```
+cai (Click group)
+├── serve         Start the HTTP API server
+├── speak         Text → TTS → speakers
+├── transcribe    Mic → STT → stdout
+├── watch FILE    File changes → TTS → speakers
+├── listen FILE   Mic → STT → append to file
+└── dialogue      Watch + listen simultaneously
+```
+
+Global options (before subcommand): `--config`, `--tts-model`, `--stt-model`, `--voice`,
+`--speed`, `--lang-code`, `--no-tts`, `--no-stt`.
+
+### Streaming TTS Playback Flow
+
+```mermaid
+sequenceDiagram
+    participant CMD as speak/watch/dialogue
+    participant AIO as audio_io.py
+    participant MM as ModelManager
+    participant MLX as mlx_audio TTS
+    participant AP as AudioPlayer
+    participant SPK as Speakers
+
+    CMD->>AIO: play_tts_streaming(text, voice, speed, lang_code)
+    AIO->>MM: generate_tts_streaming(text, voice, speed, lang_code)
+    loop each chunk
+        MM->>MLX: model.generate() yields GenerationResult
+        MLX-->>MM: GenerationResult (mx.array)
+        MM-->>AIO: yield chunk
+        AIO->>AP: queue_audio(chunk.audio)
+        AP->>SPK: sounddevice OutputStream callback
+    end
+    AIO->>AP: stop() — wait for drain
+```
+
+### Microphone Recording Flow
+
+```mermaid
+sequenceDiagram
+    participant CMD as transcribe/listen/dialogue
+    participant MR as MicRecorder
+    participant SD as sounddevice InputStream
+    participant MIC as Microphone
+    participant MM as ModelManager
+    participant MLX as mlx_audio STT
+
+    CMD->>MR: record()
+    MR->>SD: start InputStream (16kHz mono)
+    loop audio chunks
+        MIC-->>SD: raw audio frames
+        SD-->>MR: chunk callback
+        MR->>MR: compute RMS energy
+        alt speech detected + silence > 1.5s
+            MR->>SD: stop InputStream
+        end
+    end
+    MR->>MR: save to temp WAV
+    MR-->>CMD: temp file path
+    CMD->>MM: generate_stt(temp_path)
+    MM->>MLX: model.generate(path)
+    MLX-->>MM: STTOutput
+    MM-->>CMD: text
+    CMD->>CMD: cleanup temp file
+```
+
+### Dialogue Mode Threading
+
+```mermaid
+sequenceDiagram
+    participant Main as Main Thread
+    participant WT as Watcher Thread
+    participant LT as Listener Thread
+    participant Lock as Inference Lock
+    participant MM as ModelManager
+
+    Main->>Main: setup shutdown_event
+    Main->>WT: start (watchdog Observer)
+    Main->>LT: start (mic loop)
+
+    par Watcher
+        WT->>WT: detect file change
+        WT->>WT: read new text
+        WT->>Lock: acquire
+        WT->>MM: generate_tts_streaming(text)
+        MM-->>WT: audio chunks → speakers
+        WT->>Lock: release
+    and Listener
+        LT->>LT: record utterance (VAD)
+        LT->>Lock: acquire
+        LT->>MM: generate_stt(temp_path)
+        MM-->>LT: text
+        LT->>Lock: release
+        LT->>LT: append text to file
+    end
+
+    Main->>Main: Ctrl+C → set shutdown_event
+    WT->>WT: stop Observer
+    LT->>LT: stop recording
+```
+
+### File Watcher Design
+
+- Uses `watchdog` library (FSEvents on macOS) — no polling.
+- Tracks byte offset in the watched file. On `on_modified` event:
+  1. Wait 0.3s debounce timer (coalesces rapid writes).
+  2. `seek` to last known offset, read to EOF.
+  3. If file size < offset (truncation), reset offset to 0 and re-read.
+  4. Feed new text to TTS playback.
+
+### Concurrency Model
+
+Threading (not asyncio) throughout the CLI:
+- `sounddevice` uses PortAudio callbacks (thread-based).
+- `watchdog` Observer runs its own thread.
+- MLX inference is blocking CPU/GPU work.
+- A shared `threading.Lock` serializes all inference calls (MLX is not thread-safe
+  for concurrent operations).
+- A shared `threading.Event` coordinates graceful shutdown across threads.
+
+---
+
 ## Dependencies
 
 ```
 fastapi==0.115.12
 uvicorn==0.34.2
 python-multipart==0.0.20
+click==8.1.8
+watchdog==6.0.0
 mlx-audio (editable, ../mlx-audio with [all] extras)
 ```
+
+`sounddevice` and `soundfile` are transitive deps via `mlx-audio[all]`.

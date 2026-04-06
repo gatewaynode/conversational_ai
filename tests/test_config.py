@@ -74,7 +74,7 @@ def test_load_config_project_file(project_config: Path) -> None:
 def test_defaults_when_no_file() -> None:
     s = build_settings(toml_path=None)
     assert s.server.host == "127.0.0.1"
-    assert s.server.port == 8000
+    assert s.server.port == 4114
     assert s.tts.voice == "af_heart"
     assert s.tts.speed == 1.0
     assert s.stt.model == "mlx-community/whisper-large-v3-turbo-asr-fp16"

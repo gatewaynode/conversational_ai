@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -10,6 +11,7 @@ from src.audio import tts_result_to_wav_bytes
 from src.schemas import TTSRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/tts", response_class=Response)
@@ -41,15 +43,20 @@ async def synthesise(body: TTSRequest, request: Request) -> Response:
     speed = body.speed if body.speed is not None else settings.tts.speed
     lang_code = body.lang_code or settings.tts.lang_code
 
-    results = await asyncio.to_thread(
-        model_manager.generate_tts,
-        body.text,
-        voice,
-        speed,
-        lang_code,
-    )
-
-    wav_bytes = tts_result_to_wav_bytes(results)
+    try:
+        results = await asyncio.to_thread(
+            model_manager.generate_tts,
+            body.text,
+            voice,
+            speed,
+            lang_code,
+        )
+        wav_bytes = tts_result_to_wav_bytes(results)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("TTS inference failed")
+        raise HTTPException(status_code=500, detail="TTS inference failed.") from exc
 
     return Response(
         content=wav_bytes,

@@ -22,7 +22,33 @@ uv sync
 uv run python main.py
 ```
 
-Server starts at `http://127.0.0.1:8000`. Visit `/docs` for the interactive OpenAPI UI.
+Server starts at `http://127.0.0.1:4114`. Visit `/docs` for the interactive OpenAPI UI.
+
+## Installation (persistent `cai` command)
+
+`install.sh` copies the app to `~/.local/share/conversational_ai/` and creates a
+`cai` launcher at `~/.local/bin/cai`.
+
+```bash
+# mlx-audio must be checked out as a sibling directory: ../mlx-audio
+bash install.sh
+```
+
+Then start the server from anywhere:
+
+```bash
+cai
+cai --port 9000 --voice af_sky
+cai --help
+```
+
+Ensure `~/.local/bin` is in your PATH (add to `~/.zshrc` or `~/.bashrc` if not):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+**Updating:** re-run `install.sh` at any time to sync the latest source and dependency changes to the installed copy.
 
 ## Configuration
 
@@ -158,6 +184,31 @@ conversational_ai/
 │       └── system.py    # GET /v1/health, GET /v1/models
 └── tests/               # pytest test suite (79 tests)
 ```
+
+## Roadmap
+
+The next major feature is a **CLI interface** that provides direct terminal access to TTS/STT
+without running the HTTP server. The `cai` command will become a unified entry point with
+subcommands:
+
+| Command | Description |
+|---------|-------------|
+| `cai serve` | Start the HTTP API server (current behavior) |
+| `cai speak` | Text → TTS → speakers (streaming playback) |
+| `cai transcribe` | Microphone → STT → stdout |
+| `cai watch <file>` | Watch a file for changes → speak new content |
+| `cai listen <file>` | Continuous mic recording → append transcriptions to file |
+| `cai dialogue` | Watch + listen simultaneously for two-party voice interaction |
+
+Key design decisions:
+- **Streaming TTS playback** via mlx-audio's `AudioPlayer` for low-latency output
+- **RMS-based VAD** for automatic silence detection during recording
+- **File watching** via `watchdog` (FSEvents on macOS) — no polling
+- **Threading** for dialogue mode with an inference lock (MLX is not thread-safe)
+- **Shared core** — reuses `ModelManager`, `Settings`, and config system from the server
+
+See [PRD.md](PRD.md) for full requirements and [tasks/ARCHITECTURE.md](tasks/ARCHITECTURE.md)
+for diagrams and implementation details.
 
 ## License
 

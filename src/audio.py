@@ -26,7 +26,6 @@ _ALLOWED_AUDIO_MIMES = {
     "audio/x-flac",
     "audio/webm",
     "audio/aac",
-    "application/octet-stream",  # some browsers send this for .wav
 }
 
 

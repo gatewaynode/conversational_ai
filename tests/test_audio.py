@@ -171,12 +171,13 @@ async def test_rejects_empty_file() -> None:
 
 
 @pytest.mark.asyncio
-async def test_accepts_octet_stream() -> None:
-    """Some browsers send application/octet-stream for .wav files."""
+async def test_rejects_octet_stream() -> None:
+    """application/octet-stream is too broad and must be rejected (415)."""
     data = b"\x00" * 100
     upload = _make_upload_file(data, content_type="application/octet-stream")
-    result = await validate_audio_upload(upload, max_size=1_000_000)
-    assert result == data
+    with pytest.raises(HTTPException) as exc_info:
+        await validate_audio_upload(upload, max_size=1_000_000)
+    assert exc_info.value.status_code == 415
 
 
 # ---------------------------------------------------------------------------
