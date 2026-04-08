@@ -8,11 +8,9 @@ from typing import Any
 
 import click
 
-from src.config import build_settings
+from src.config import Settings, build_settings
 from src.logging_setup import setup_logging
 from src.models import ModelManager
-
-from src.config import Settings
 
 
 @dataclass
@@ -75,9 +73,11 @@ def cli(
     setup_logging(settings.log)
 
     mm = ModelManager()
-    if not no_tts:
-        mm.load_tts(settings.tts.model)
-    if not no_stt:
-        mm.load_stt(settings.stt.model)
+    # `serve` loads models inside its own lifespan; skip here to avoid double loading.
+    if ctx.invoked_subcommand != "serve":
+        if not no_tts:
+            mm.load_tts(settings.tts.model)
+        if not no_stt:
+            mm.load_stt(settings.stt.model)
 
     ctx.obj = CliContext(settings=settings, mm=mm)
