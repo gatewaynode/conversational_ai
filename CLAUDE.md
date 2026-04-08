@@ -140,3 +140,7 @@ text = result.text
 - **Input Validation**: Validate text length, audio file size, and MIME types at API boundaries
 - **No Shell Injection**: Never pass user input to shell commands
 - **Thoroughly Review Everything**: Run security, style, and architecture reviews regularly
+
+## MCP Tools
+
+- **tilth**: Smarter code reading for Agents

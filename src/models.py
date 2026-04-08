@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -98,6 +99,28 @@ class ModelManager:
             results.append(result)
 
         return results
+
+    def generate_tts_streaming(
+        self,
+        text: str,
+        voice: str,
+        speed: float,
+        lang_code: str,
+    ) -> Generator[GenerationResult, None, None]:
+        """Yield TTS GenerationResult chunks as they arrive (streaming).
+
+        This is a blocking generator; consume it from a thread, not the
+        async event loop.
+        """
+        if self._tts_model is None:
+            raise RuntimeError("TTS model is not loaded")
+
+        yield from self._tts_model.generate(
+            text=text,
+            voice=voice,
+            speed=speed,
+            lang_code=lang_code,
+        )
 
     def generate_stt(self, audio_path: Path | str) -> STTOutput:
         """Run STT inference on a file path and return STTOutput.
