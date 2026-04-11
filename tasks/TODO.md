@@ -1,106 +1,187 @@
-# TODO: TTS/STT API Server
+# TODO: Mic Controls, Wake Word, Claude Skill
 
-## Phase 1: Project Setup
-
-- [x] Update `pyproject.toml`: add fastapi, uvicorn, python-multipart as pinned deps
-- [x] Add mlx-audio as editable local dependency via `uv add --editable ../mlx-audio[all]`
-- [x] Add ruff as dev dependency for linting/formatting
-- [x] Create `src/__init__.py`
-- [x] Create `src/routes/__init__.py`
-- [x] Create `config.toml` with default values
-- [x] Run `uv sync` to verify dependency resolution
-
-## Phase 2: Config Layer
-
-- [x] Write `src/config.py`: Pydantic `Settings` model with all fields
-- [x] Write `load_config()` using `tomllib` (stdlib)
-- [x] Write `build_settings()` that merges TOML + CLI overrides
-- [x] Write `tests/test_config.py`: TOML loading, CLI override precedence, defaults
-
-## Phase 3: Model Manager
-
-- [x] Write `src/models.py`: `ModelManager` class with `load_tts()`, `load_stt()`
-- [x] Add `generate_tts()` wrapper: call model.generate(), collect GenerationResult chunks
-- [x] Add `generate_stt()` wrapper: call model.generate(path), return STTOutput
-- [x] Smoke test: `uv run python -c "from src.models import ModelManager"`
-
-## Phase 4: Audio Utilities
-
-- [x] Write `src/audio.py`: `tts_result_to_wav_bytes()` — concatenate mx.array chunks, encode WAV
-- [x] Add `validate_audio_upload()`: check Content-Type, file size
-- [x] Add `save_temp_audio()`: write bytes to temp file, return path
-- [x] Write `tests/test_audio.py`: WAV conversion, validation rejects oversized files
-
-## Phase 5: Request/Response Schemas
-
-- [x] Write `src/schemas.py`: TTSRequest, STTResponse, ModelsResponse, HealthResponse
-- [x] Add Pydantic field validators (text length on TTSRequest)
-
-## Phase 6: Route Handlers
-
-- [x] Write `src/routes/tts.py`: POST /v1/tts with asyncio.to_thread()
-- [x] Write `src/routes/stt.py`: POST /v1/stt with file upload, temp file, cleanup
-- [x] Write `src/routes/system.py`: GET /v1/health, GET /v1/models
-- [x] Write `tests/test_routes.py`: FastAPI TestClient with mocked ModelManager
-
-## Phase 7: App Assembly & Entry Point
-
-- [x] Rewrite `main.py`: argparse, config loading, FastAPI app factory, uvicorn.run
-- [x] Add CORS middleware restricted to localhost origins (allow_origin_regex)
-- [x] Wire lifespan event to load models from config at startup
-- [x] Include all routers from `src/routes/`
-
-## Phase 8: Integration Testing
-
-- [x] Start server with `uv run python main.py`, verify /v1/health → `{"status":"ok"}`
-- [x] Test TTS: WAV returned (92KB, 24kHz, ~2s for "Hello, can you hear me?")
-- [x] Test STT round-trip: TTS-generated WAVs fed back through STT with near-perfect transcription
-- [x] Verify CORS allows localhost:3000, blocks evil.example.com
-- [x] Pin transformers==5.3.0 (5.5.0 had mistral_common ReasoningEffort import bug)
-- [x] Play output WAV — audio quality confirmed
-
-## Review — Server (Phases 1–8)
-
-All 90 tests passing (79 original + 11 from security hardening). Live round-trip verified.
+Three features, landed in order so each one can lean on the previous.
 
 ---
 
-## Phase 9: CLI Foundation
+## Feature 1 — Mic noise-floor controls
 
-- [ ] Add `click==8.1.8` and `watchdog==6.0.0` to `pyproject.toml`
-- [ ] Run `uv sync` to install new deps
-- [ ] Create `src/cli/__init__.py` — Click group with global options, config/model loading on `ctx.obj`
-- [ ] Create `cli.py` — entry point importing the Click group
-- [ ] Add `generate_tts_streaming()` method to `src/models.py` — yields chunks instead of collecting
-- [ ] Create `src/cli/audio_io.py` — `play_tts_streaming()` (uses mlx-audio AudioPlayer) and `MicRecorder` (sounddevice + RMS VAD)
+**Goal:** filter keyboard clacks and household noise without hand-tuning a
+magic constant per room. Ship configurable thresholds + an opt-in noise
+calibration pass + a minimum-speech-duration gate.
 
-## Phase 10: Simple Subcommands
+### 1.1 Make `MicRecorder` params instance-level
 
-- [ ] Create `src/cli/speak.py` — text from arg/stdin/file → TTS → speakers
-- [ ] Create `src/cli/transcribe.py` — mic → STT → stdout/file
-- [ ] Wire `serve` subcommand to wrap `main.py` app factory + uvicorn
-- [ ] Test: `cai speak "hello"` plays audio
-- [ ] Test: `cai transcribe` records and prints text
-- [ ] Test: `cai serve` starts the API server
+- [ ] Convert `MicRecorder` class constants (`RMS_THRESHOLD`, `SILENCE_SECONDS`,
+      `CHUNK_SECONDS`) to `__init__` params with the current values as defaults.
+- [ ] Add new param `min_speech_seconds: float = 0.15` — consecutive chunks
+      above threshold required before `speech_detected` latches. Kills single
+      keystroke / door-slam false positives.
+- [ ] Update `_callback` to count consecutive above-threshold chunks and only
+      set `speech_detected` once the count ≥ `min_speech_chunks`.
+- [ ] Unit-test in `tests/test_cli_audio_io.py`: single loud chunk does not
+      latch; sustained chunks do; silence counter still works.
 
-## Phase 11: File-Based Modes
+### 1.2 Config plumbing
 
-- [ ] Create `src/cli/watch.py` — watchdog observer, byte offset tracking, debounce, TTS playback
-- [ ] Create `src/cli/listen.py` — continuous mic → STT → append to file loop
-- [ ] Test: `cai watch test.txt` + append to file → speaks new content
-- [ ] Test: `cai listen out.txt` + speak → text appears in file
+- [ ] Add `[mic]` section to `src/config.py` (Pydantic `MicSettings` submodel):
+      `rms_threshold: float = 0.01`, `silence_seconds: float = 1.5`,
+      `min_speech_seconds: float = 0.15`, `calibrate_noise: bool = False`,
+      `calibration_seconds: float = 1.0`, `calibration_multiplier: float = 3.0`.
+- [ ] Update `config.toml` with a commented `[mic]` block showing defaults.
+- [ ] `tests/test_config.py`: TOML load + CLI override coverage for `[mic]`.
 
-## Phase 12: Dialogue Mode
+### 1.3 CLI flags
 
-- [ ] Create `src/cli/dialogue.py` — threaded watcher + listener with inference lock
-- [ ] Test: `cai dialogue --speak-file a.txt --listen-file b.txt` runs both directions
-- [ ] Verify graceful shutdown on Ctrl+C (no deadlocks, threads join cleanly)
+- [ ] Add flags to `transcribe`, `listen`, `dialogue`:
+      `--mic-threshold`, `--mic-silence`, `--mic-min-speech`, `--calibrate-noise/--no-calibrate-noise`.
+- [ ] Wire each subcommand to build `MicRecorder` from merged settings.
 
-## Phase 13: Integration & Polish
+### 1.4 Noise-floor calibration
 
-- [ ] Update `install.sh` — `cai` shim calls `cli.py` instead of `main.py`
-- [ ] Update `README.md` with CLI usage section
-- [ ] Write `tests/test_cli_audio_io.py` — unit tests for VAD logic, file offset tracking
-- [ ] Write CLI subcommand tests using Click CliRunner (mock ModelManager)
-- [ ] Verify all existing server tests still pass (`uv run pytest`)
-- [ ] End-to-end verification of all 6 subcommands
+- [ ] New method `MicRecorder.calibrate(seconds: float) -> float` — opens a
+      short `InputStream`, collects RMS over `seconds`, returns the measured
+      floor.
+- [ ] On `record()`, if `calibrate_noise=True`, run calibration once (cache
+      the result on the instance), then set effective threshold =
+      `max(configured_threshold, measured_floor * multiplier)`.
+- [ ] Log both values at INFO so users can see what was chosen.
+- [ ] `listen` and `dialogue` run calibration once at startup, not per-utterance.
+- [ ] `transcribe` skips calibration by default (one-shot UX); opt in with
+      `--calibrate-noise`.
+
+### 1.5 Verify
+
+- [ ] All existing `tests/test_cli_audio_io.py` tests still pass.
+- [ ] New tests for `min_speech_seconds` gate and calibration math.
+- [ ] Live check on real hardware: clack the keyboard during `cai transcribe`,
+      verify it does not trigger a recording.
+
+---
+
+## Feature 2 — Wake word / trigger word (Option A: rolling Whisper)
+
+**Goal:** `cai listen` and `cai dialogue` ignore speech until the user says a
+configurable trigger word (default: `"computer"`). Uses the already-loaded
+Whisper model on short utterances — plenty of headroom on M3 Ultra / 512 GB.
+
+### 2.1 Design
+
+- [ ] New module `src/cli/wake_word.py` with a `WakeWordDetector` class.
+- [ ] API shape:
+      ```python
+      class WakeWordDetector:
+          def __init__(self, mm, word: str, *, include_trigger: bool = False): ...
+          def wait_for_trigger(self, recorder: MicRecorder, shutdown: Event) -> None:
+              """Loop: record utterance, transcribe, match trigger.
+              Returns when matched, or raises on shutdown."""
+          def strip_trigger(self, text: str) -> str: ...
+      ```
+- [ ] Matching is case-insensitive, punctuation-stripped, whole-word (regex
+      `\btrigger\b`) — avoids "computer science" misfires vs "computer, list…".
+- [ ] `include_trigger=False` (default) causes `strip_trigger` to remove the
+      trigger and any leading comma/filler from the transcript before write-out.
+
+### 2.2 Config plumbing
+
+- [ ] Add `[wake_word]` section to `src/config.py`:
+      `enabled: bool = False`, `word: str = "computer"`,
+      `include_trigger: bool = False`, `timeout_seconds: float = 30.0`.
+- [ ] `timeout_seconds` = re-arm window. After a successful trigger, the next
+      utterance goes through unconditionally; if no utterance arrives within
+      `timeout_seconds`, detector re-engages.
+- [ ] Update `config.toml` with commented defaults.
+- [ ] `tests/test_config.py`: coverage for `[wake_word]`.
+
+### 2.3 Integration
+
+- [ ] `listen` subcommand: if wake word enabled, wrap the record loop so each
+      utterance first passes through `WakeWordDetector` state machine.
+- [ ] `dialogue` subcommand: same wrapping on the listener thread. Must
+      compose with `barge_in` / `full_duplex` duplex modes without deadlock —
+      wake-word detection acquires the inference lock exactly like a normal
+      STT call.
+- [ ] CLI flags: `--wake-word WORD`, `--no-wake-word`, `--wake-timeout SECONDS`,
+      `--include-trigger/--strip-trigger`.
+- [ ] `transcribe` is intentionally skipped — one-shot, user already
+      initiated it by running the command.
+
+### 2.4 Tests
+
+- [ ] `tests/test_wake_word.py`: unit tests for matching (case, punctuation,
+      whole-word), `strip_trigger` output, timeout re-arm behavior.
+- [ ] Mocked CliRunner tests for `listen --wake-word` and `dialogue --wake-word`.
+- [ ] Live check: `cai listen out.txt --wake-word computer` — talking random
+      noise does nothing; saying "computer, hello world" appends "hello world".
+
+### 2.5 Docs
+
+- [ ] Update `README.md` CLI section with wake-word usage + config example.
+- [ ] Update `PRD.md` with the wake-word feature in a new subsection.
+
+---
+
+## Feature 3 — Claude Code skill + installer
+
+**Goal:** ship reusable Claude Code skills that wrap `cai` for two use cases
+(dictation, dialogue), plus a `cai install-skill` command that drops them
+into `~/.claude/skills/`.
+
+### 3.1 Author the skill files
+
+- [ ] Create `skills/` directory in the repo.
+- [ ] `skills/cai-dictation/SKILL.md` — frontmatter + instructions for when
+      Claude should invoke `cai listen` / `cai transcribe` on the user's
+      behalf (e.g., "when the user asks to dictate to a file", "when they
+      ask for voice input").
+- [ ] `skills/cai-dialogue/SKILL.md` — frontmatter + instructions for
+      driving `cai dialogue`, explaining the two-file contract and the
+      duplex modes (barge-in / full-duplex matrix).
+- [ ] Each SKILL.md explains: prerequisites (`cai` on PATH), config hints
+      (where to set wake word, noise floor), and example invocations.
+
+### 3.2 Installer subcommand
+
+- [ ] New `src/cli/install_skill.py` implementing `cai install-skill`.
+- [ ] Flags: `--mode dictation|dialogue|both` (default `both`),
+      `--target DIR` (default `~/.claude/skills`), `--force` (overwrite).
+- [ ] Copy `skills/cai-<mode>/` into `<target>/cai-<mode>/` idempotently.
+      If target exists and `--force` not set, print a diff-style message
+      and exit non-zero.
+- [ ] Resolve skill source directory via `importlib.resources` so it works
+      both from the repo and from the installed copy at
+      `~/.local/share/conversational_ai`.
+- [ ] `cai uninstall-skill [--mode …]` for symmetry.
+
+### 3.3 PATH resolution
+
+- [ ] Decision: skills assume `cai` is on PATH. Simpler, matches how every
+      other Claude Code skill invokes CLIs, and the install.sh shim already
+      puts `cai` at `~/.local/bin/cai`.
+- [ ] `install-skill` checks `shutil.which("cai")` at install time and
+      warns (non-fatal) if not found, pointing users at `install.sh`.
+
+### 3.4 Tests
+
+- [ ] `tests/test_install_skill.py`: CliRunner coverage for fresh install,
+      `--force` overwrite, missing source directory, uninstall.
+- [ ] Lint the two `SKILL.md` files for required frontmatter fields.
+
+### 3.5 Docs
+
+- [ ] README section: "Claude Code integration" with `cai install-skill`
+      example and a one-line description of each skill.
+
+---
+
+## Sequencing
+
+1. **Feature 1 first** — the `min_speech_seconds` gate and calibration are
+   prerequisites for a low-false-positive wake-word loop.
+2. **Feature 2 second** — depends on #1's tightened VAD so we aren't
+   transcribing every keyboard burst.
+3. **Feature 3 last** — packaging layer; best wrapped around the final UX.
+
+Each feature ends with a **Review** subsection appended here once complete,
+summarizing what shipped, what tests were added, and any rough edges
+deferred to `tasks/BUGS.md`.

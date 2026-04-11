@@ -92,7 +92,7 @@ graph TB
         AudioIO[audio_io.py]
         Player[AudioPlayer<br/>streaming TTS playback]
         MicRec[MicRecorder<br/>VAD + recording]
-        FileWatch[watchdog<br/>FSEvents observer]
+        FileWatch[TextFileHandler<br/>mtime poller thread]
     end
 
     subgraph "Shared Layer"
@@ -346,12 +346,12 @@ sequenceDiagram
     participant MM as ModelManager
 
     Main->>Main: setup shutdown_event
-    Main->>WT: start (watchdog Observer)
+    Main->>WT: start (mtime-poller thread)
     Main->>LT: start (mic loop)
 
     par Watcher
-        WT->>WT: detect file change
-        WT->>WT: read new text
+        WT->>WT: poll st_mtime (100ms)
+        WT->>WT: read new bytes from offset
         WT->>Lock: acquire
         WT->>MM: generate_tts_streaming(text)
         MM-->>WT: audio chunks → speakers
@@ -366,24 +366,27 @@ sequenceDiagram
     end
 
     Main->>Main: Ctrl+C → set shutdown_event
-    WT->>WT: stop Observer
+    WT->>WT: stop poller thread
     LT->>LT: stop recording
 ```
 
 ### File Watcher Design
 
-- Uses `watchdog` library (FSEvents on macOS) — no polling.
-- Tracks byte offset in the watched file. On `on_modified` event:
-  1. Wait 0.3s debounce timer (coalesces rapid writes).
-  2. `seek` to last known offset, read to EOF.
-  3. If file size < offset (truncation), reset offset to 0 and re-read.
-  4. Feed new text to TTS playback.
+- Pure stdlib `TextFileHandler` worker thread — no `watchdog`, no FSEvents,
+  no inotify. See P10 in `tasks/BUGS.md` for the rationale.
+- Polls `path.stat().st_mtime` on a 100ms interval and tracks the byte offset
+  of the last read. On each tick where `mtime` advanced:
+  1. `seek` to last known offset, read to EOF.
+  2. If file size < offset (truncation), reset offset to 0 and re-read.
+  3. Feed new text to TTS playback.
+- Worst-case detect-to-speak latency is ~100ms (one poll interval), vs. the
+  ~0–50ms FSEvents latency plus the 300ms debounce the old design needed.
 
 ### Concurrency Model
 
 Threading (not asyncio) throughout the CLI:
 - `sounddevice` uses PortAudio callbacks (thread-based).
-- `watchdog` Observer runs its own thread.
+- The mtime-poller file watcher runs on its own worker thread.
 - MLX inference is blocking CPU/GPU work.
 - A shared `threading.Lock` serializes all inference calls (MLX is not thread-safe
   for concurrent operations).
@@ -398,7 +401,6 @@ fastapi==0.115.12
 uvicorn==0.34.2
 python-multipart==0.0.20
 click==8.1.8
-watchdog==6.0.0
 mlx-audio (editable, ../mlx-audio with [all] extras)
 ```
 
