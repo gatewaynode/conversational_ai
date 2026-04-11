@@ -26,20 +26,35 @@ def play_tts_streaming(
     voice: str,
     speed: float,
     lang_code: str,
+    *,
+    cancel: threading.Event | None = None,
 ) -> None:
     """Generate TTS audio and play it through the default speakers.
 
     Feeds chunks to AudioPlayer as they arrive so playback starts before
-    the full text is synthesised.  Blocks until playback completes.
+    the full text is synthesised. Blocks until playback completes.
+
+    If `cancel` is provided and set mid-stream (barge-in), playback is
+    discarded immediately via `AudioPlayer.flush()` instead of drained —
+    the speaker goes quiet right away so the listener's reply isn't
+    stepped on.
     """
     from mlx_audio.tts.audio_player import AudioPlayer
 
     player = AudioPlayer(sample_rate=24_000)
+    cancelled = False
     try:
         for chunk in mm.generate_tts_streaming(text, voice, speed, lang_code):
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                logger.info("TTS playback cancelled (barge-in)")
+                break
             player.queue_audio(chunk.audio)
     finally:
-        player.stop()
+        if cancelled:
+            player.flush()
+        else:
+            player.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +80,14 @@ class MicRecorder:
     SILENCE_SECONDS: float = 1.5  # consecutive silence to end utterance
     CHUNK_SECONDS: float = 0.05   # callback block size
 
-    def record(self) -> Path:
-        """Block until one utterance is captured.  Returns a temp WAV path."""
+    def record(self, on_speech_start: threading.Event | None = None) -> Path:
+        """Block until one utterance is captured. Returns a temp WAV path.
+
+        If `on_speech_start` is provided, it is set on the rising edge —
+        the first chunk whose RMS crosses the threshold — and cleared
+        before this method returns. This is the barge-in signal consumed
+        by `play_tts_streaming(cancel=…)`.
+        """
         import sounddevice as sd
         import soundfile as sf
 
@@ -91,7 +112,10 @@ class MicRecorder:
             rms = float(np.sqrt(np.mean(chunk**2)))
 
             if rms > self.RMS_THRESHOLD:
-                speech_detected.set()
+                if not speech_detected.is_set():
+                    speech_detected.set()
+                    if on_speech_start is not None:
+                        on_speech_start.set()
                 silence_count[0] = 0
                 audio_chunks.append(chunk)
             elif speech_detected.is_set():
@@ -110,6 +134,10 @@ class MicRecorder:
             callback=_callback,
         ):
             stop_event.wait()
+
+        # Clear the barge-in signal so it doesn't leak into the next turn.
+        if on_speech_start is not None:
+            on_speech_start.clear()
 
         audio = np.concatenate(audio_chunks) if audio_chunks else np.zeros(1, dtype=np.float32)
 

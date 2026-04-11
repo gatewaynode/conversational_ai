@@ -37,10 +37,12 @@ def create_app(settings: Settings) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        from pathlib import Path as _Path
+        models_dir = _Path(settings.models.models_dir).expanduser()
         mm = ModelManager()
         logger.info("Loading models…")
-        mm.load_tts(settings.tts.model)
-        mm.load_stt(settings.stt.model)
+        mm.load_tts(settings.tts.model, models_dir=models_dir)
+        mm.load_stt(settings.stt.model, models_dir=models_dir)
         app.state.model_manager = mm
         app.state.settings = settings
         logger.info("Models ready. Server accepting requests.")

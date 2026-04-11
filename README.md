@@ -18,8 +18,8 @@ cd conversational_ai
 # Install dependencies (creates .venv automatically)
 uv sync
 
-# Start the server (downloads models on first run ~500 MB)
-uv run python main.py
+# Start the HTTP API server (downloads models on first run ~500 MB)
+uv run python cli.py serve
 ```
 
 Server starts at `http://127.0.0.1:4114`. Visit `/docs` for the interactive OpenAPI UI.
@@ -32,14 +32,6 @@ Server starts at `http://127.0.0.1:4114`. Visit `/docs` for the interactive Open
 ```bash
 # mlx-audio must be checked out as a sibling directory: ../mlx-audio
 bash install.sh
-```
-
-Then start the server from anywhere:
-
-```bash
-cai
-cai --port 9000 --voice af_sky
-cai --help
 ```
 
 Ensure `~/.local/bin` is in your PATH (add to `~/.zshrc` or `~/.bashrc` if not):
@@ -166,49 +158,140 @@ uv run ruff format src tests
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture details and contribution guidelines.
 
+## CLI usage
+
+`cai` is the unified entry point for both the API server and direct terminal TTS/STT.
+
+### Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `cai serve` | Start the HTTP API server |
+| `cai speak [TEXT]` | Speak text via TTS (arg, `--file`, or stdin) |
+| `cai transcribe` | Record from mic → print transcription |
+| `cai watch FILE` | Watch a file — speak any new content appended to it |
+| `cai listen FILE` | Continuous mic → append transcriptions to FILE |
+| `cai dialogue --speak-file A --listen-file B` | Watch + listen simultaneously |
+
+### Examples
+
+```bash
+# Speak text directly
+cai speak "Hello, world!"
+
+# Speak a file
+cai speak --file notes.txt
+
+# Transcribe one utterance to stdout
+cai transcribe
+
+# Transcribe to a file
+cai transcribe -o transcript.txt
+
+# Speak whatever gets appended to a file (Ctrl+C to stop)
+cai watch /tmp/tts.txt
+
+# Append mic transcriptions to a file (Ctrl+C to stop)
+cai listen /tmp/stt.txt
+
+# Two-way: speak from a.txt, transcribe mic to b.txt
+cai dialogue --speak-file a.txt --listen-file b.txt
+
+# Start the HTTP server
+cai serve
+```
+
+### Dialogue duplex modes
+
+`cai dialogue` runs TTS (file → speaker) and STT (mic → file) at the same
+time. Two orthogonal flags in the `[dialogue]` section of `config.toml`
+cover the four useful combinations:
+
+```toml
+[dialogue]
+speak_file  = "~/.local/share/conversational_ai/speak.txt"
+listen_file = "~/.local/share/conversational_ai/listen.txt"
+barge_in    = true   # VAD rising edge cancels in-flight TTS
+full_duplex = true   # mic stays hot while TTS is playing
+```
+
+| `barge_in` | `full_duplex` | Mode | When to use it |
+|------------|---------------|------|----------------|
+| `true`     | `true`        | **Full-duplex + barge-in** (default) | Headphones. Natural conversation — start talking and TTS stops mid-sentence. |
+| `true`     | `false`       | **Speaker-safe half-duplex** | Open speakers, no headphones. Mic is gated while TTS plays so the model never hears itself; your next utterance still interrupts the *following* TTS reply. |
+| `false`    | `true`        | **Loopback / self-dialogue** | Intentional TTS → mic → STT chains. The agent speaks, transcribes its own output, and continues — the feedback loop is the feature. |
+| `false`    | `false`       | **Walkie-talkie** | Predictable turn-taking. Strict half-duplex, TTS always finishes, no interrupts. Simplest model when you want zero surprises. |
+
+Example — running dialogue in speaker-safe mode on a laptop without
+headphones:
+
+```toml
+# ~/.config/conversational_ai/config.toml
+[dialogue]
+barge_in    = true
+full_duplex = false
+```
+
+```bash
+cai dialogue --speak-file a.txt --listen-file b.txt
+# Startup banner shows the active mode:
+#   Dialogue active [barge_in=True full_duplex=False] — watching …
+```
+
+Loopback mode for agent-talks-to-itself workflows — point both files at
+the same path and let the agent drive its own conversation:
+
+```toml
+[dialogue]
+barge_in    = false
+full_duplex = true
+```
+
+```bash
+cai dialogue --speak-file scratch.txt --listen-file scratch.txt
+```
+
+### Global options
+
+All subcommands accept these options before the subcommand name:
+
+```
+--config PATH        Path to TOML config file
+--tts-model MODEL    Override TTS model
+--stt-model MODEL    Override STT model
+--voice VOICE        Override TTS voice
+--speed SPEED        Override TTS speed
+--lang-code CODE     Override TTS language code
+--no-tts             Skip loading the TTS model
+--no-stt             Skip loading the STT model
+```
+
 ## Project layout
 
 ```
 conversational_ai/
-├── main.py              # Entry point — argparse, app factory, uvicorn
+├── cli.py               # Unified `cai` entry point (Click group + subcommands)
+├── main.py              # FastAPI app factory (used by `cai serve`)
 ├── config.toml          # Default configuration
 ├── src/
 │   ├── config.py        # TOML + CLI settings (Pydantic)
-│   ├── models.py        # ModelManager — TTS/STT singleton loader
+│   ├── models.py        # ModelManager — TTS/STT loader and inference
 │   ├── audio.py         # WAV encoding, upload validation, temp files
 │   ├── schemas.py       # Pydantic request/response models
 │   ├── middleware.py    # X-Limit-* response headers
-│   └── routes/
-│       ├── tts.py       # POST /v1/tts
-│       ├── stt.py       # POST /v1/stt
-│       └── system.py    # GET /v1/health, GET /v1/models
-└── tests/               # pytest test suite (79 tests)
+│   ├── routes/
+│   │   ├── tts.py       # POST /v1/tts
+│   │   ├── stt.py       # POST /v1/stt
+│   │   └── system.py    # GET /v1/health, GET /v1/models
+│   └── cli/
+│       ├── audio_io.py  # Streaming TTS playback + mic recording (VAD)
+│       ├── speak.py     # `cai speak`
+│       ├── transcribe.py # `cai transcribe`
+│       ├── watch.py     # `cai watch`
+│       ├── listen.py    # `cai listen`
+│       └── dialogue.py  # `cai dialogue`
+└── tests/               # pytest test suite (90+ tests)
 ```
-
-## Roadmap
-
-The next major feature is a **CLI interface** that provides direct terminal access to TTS/STT
-without running the HTTP server. The `cai` command will become a unified entry point with
-subcommands:
-
-| Command | Description |
-|---------|-------------|
-| `cai serve` | Start the HTTP API server (current behavior) |
-| `cai speak` | Text → TTS → speakers (streaming playback) |
-| `cai transcribe` | Microphone → STT → stdout |
-| `cai watch <file>` | Watch a file for changes → speak new content |
-| `cai listen <file>` | Continuous mic recording → append transcriptions to file |
-| `cai dialogue` | Watch + listen simultaneously for two-party voice interaction |
-
-Key design decisions:
-- **Streaming TTS playback** via mlx-audio's `AudioPlayer` for low-latency output
-- **RMS-based VAD** for automatic silence detection during recording
-- **File watching** via `watchdog` (FSEvents on macOS) — no polling
-- **Threading** for dialogue mode with an inference lock (MLX is not thread-safe)
-- **Shared core** — reuses `ModelManager`, `Settings`, and config system from the server
-
-See [PRD.md](PRD.md) for full requirements and [tasks/ARCHITECTURE.md](tasks/ARCHITECTURE.md)
-for diagrams and implementation details.
 
 ## License
 

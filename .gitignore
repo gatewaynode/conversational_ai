@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Dialogue smoke-test scratch files
+tests/dialogue_smoke.speak.txt
+tests/dialogue_smoke.listen.txt

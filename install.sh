@@ -64,7 +64,7 @@ log "Installing Python dependencies"
 mkdir -p "$BIN_DIR"
 cat > "$ENTRY" << EOF
 #!/usr/bin/env bash
-exec uv run --directory "$INSTALL_DIR" python main.py "\$@"
+exec uv run --directory "$INSTALL_DIR" python cli.py "\$@"
 EOF
 chmod +x "$ENTRY"
 log "Created entry script at $ENTRY"

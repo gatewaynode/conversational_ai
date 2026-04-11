@@ -7,7 +7,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,15 @@ lang_code = "a"
 
 [stt]
 model = "mlx-community/whisper-large-v3-turbo-asr-fp16"
+
+[models]
+models_dir = "~/.lmstudio/models"
+
+[dialogue]
+speak_file = "~/.local/share/conversational_ai/speak.txt"
+listen_file = "~/.local/share/conversational_ai/listen.txt"
+barge_in = true
+full_duplex = true
 
 [limits]
 max_text_length = 5000
@@ -63,37 +72,25 @@ class LogSettings(BaseModel):
     max_age_days: int = Field(default=7, ge=1)
 
 
+class ModelsSettings(BaseModel):
+    models_dir: str = str(Path.home() / ".lmstudio" / "models")
+
+
+class DialogueSettings(BaseModel):
+    speak_file: str = str(Path.home() / ".local" / "share" / "conversational_ai" / "speak.txt")
+    listen_file: str = str(Path.home() / ".local" / "share" / "conversational_ai" / "listen.txt")
+    barge_in: bool = True
+    full_duplex: bool = True
+
+
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
+    models: ModelsSettings = Field(default_factory=ModelsSettings)
+    dialogue: DialogueSettings = Field(default_factory=DialogueSettings)
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     log: LogSettings = Field(default_factory=LogSettings)
-
-    @field_validator("server", mode="before")
-    @classmethod
-    def coerce_server(cls, v: Any) -> Any:
-        return v if isinstance(v, dict) else v
-
-    @field_validator("tts", mode="before")
-    @classmethod
-    def coerce_tts(cls, v: Any) -> Any:
-        return v if isinstance(v, dict) else v
-
-    @field_validator("stt", mode="before")
-    @classmethod
-    def coerce_sst(cls, v: Any) -> Any:
-        return v if isinstance(v, dict) else v
-
-    @field_validator("limits", mode="before")
-    @classmethod
-    def coerce_limits(cls, v: Any) -> Any:
-        return v if isinstance(v, dict) else v
-
-    @field_validator("log", mode="before")
-    @classmethod
-    def coerce_log(cls, v: Any) -> Any:
-        return v if isinstance(v, dict) else v
 
 
 def ensure_xdg_config() -> Path:

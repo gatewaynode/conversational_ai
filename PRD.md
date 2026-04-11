@@ -175,14 +175,18 @@ Config layering (unchanged): hardcoded defaults → TOML file → CLI flags.
 
 ## File Watching
 
-Uses the `watchdog` library (FSEvents on macOS) for efficient, event-driven file monitoring.
-No polling. Changes are debounced to handle rapid writes from other processes.
+A dedicated worker thread per watched file polls `path.stat().st_mtime` on a short
+interval (default 100ms) and reads any newly appended bytes from the tracked offset.
+Pure stdlib — no FSEvents, inotify, or cross-platform observer library. Truncation
+is detected by a shrinking file size and resets the offset to 0. See P10 in
+`tasks/BUGS.md` for the rationale behind ripping out the previous event-driven
+observer.
 
 ## Concurrency Model
 
 Threading, not asyncio. Rationale:
 - `sounddevice` callbacks are thread-based.
-- `watchdog` Observer is thread-based.
+- The mtime-poller file watcher runs on its own worker thread.
 - MLX inference is blocking CPU/GPU work.
 - A shared `threading.Lock` serializes all model inference calls.
 - A shared `threading.Event` coordinates graceful shutdown.
@@ -192,7 +196,6 @@ Threading, not asyncio. Rationale:
 | Package     | Version  | Purpose                            |
 |-------------|----------|------------------------------------|
 | click       | 8.1.8    | CLI framework                      |
-| watchdog    | 6.0.0    | File system monitoring (FSEvents)  |
 
 `sounddevice` and `soundfile` are already transitive dependencies via `mlx-audio[all]`.
 
