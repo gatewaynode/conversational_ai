@@ -2,13 +2,12 @@
 
 ## Problem
 
-The conversational-ai project currently only exposes TTS/STT via a REST API server.
-Users who want to interact with these models directly from the terminal — speaking text
-through speakers, transcribing from a microphone, or building simple voice pipelines
-between files — must write their own client code against the API.
-
-A native CLI interface eliminates this friction: same models, no server overhead, and
-composable UNIX-style commands that plug into existing workflows.
+The conversational-ai project exposes TTS/STT as a CLI (`cai`) and, for
+browser-based clients that can't shell out, as a localhost HTTP API
+(`cai serve`). Users who want to speak text through speakers, transcribe
+from a microphone, or build simple voice pipelines between files should not
+have to write their own client code against the API — a native CLI eliminates
+that friction and plugs into existing UNIX-style workflows.
 
 ## Goals
 
@@ -40,7 +39,9 @@ Starts the HTTP API server (current `main.py` behavior, relocated under a subcom
 
 ```bash
 cai serve
-cai serve --port 9000 --voice af_sky
+# Host/port come from [server] in the config file.
+# To override, edit the config or pass a CLI override like:
+cai --tts-model mlx-community/Kokoro-82M-bf16 serve
 ```
 
 ### `cai speak`
@@ -55,33 +56,40 @@ cai speak "Hello, can you hear me?"
 echo "Hello world" | cai speak
 
 # From file
-cai speak --input-file notes.txt
+cai speak --file notes.txt
 
-# Override voice/speed
-cai speak --voice af_sky --speed 1.2 "Good morning"
+# Override voice/speed (global flags, before the subcommand)
+cai --voice af_sky --speed 1.2 speak "Good morning"
 ```
 
-Options: `--voice`, `--speed`, `--lang-code`, `--input-file`
+Options: `-f/--file`. `--voice`, `--speed`, and `--lang-code` are **global**
+flags (before the subcommand) — they're inherited from config and apply to
+every subcommand.
 
 ### `cai transcribe`
 
-Record from microphone and print transcription.
+Record a single utterance from the microphone and print/write the transcription.
 
 ```bash
 # Record until silence detected, print text
 cai transcribe
 
-# Record for max 10 seconds
-cai transcribe --duration 10
-
 # Write to file instead of stdout
-cai transcribe --output transcript.txt
+cai transcribe -o transcript.txt
 
-# Disable silence detection (press Enter to stop)
-cai transcribe --no-vad
+# Tighten the VAD gate
+cai transcribe --mic-threshold 0.02 --mic-silence 1.0
+
+# Calibrate room tone before recording (opt-in; adds ~1s startup)
+cai transcribe --calibrate-noise
 ```
 
-Options: `--duration`, `--vad/--no-vad`, `--vad-threshold`, `--silence-duration`, `--output`
+Options: `-o/--output FILE`, `--mic-threshold`, `--mic-silence`,
+`--mic-min-speech`, `--calibrate-noise/--no-calibrate-noise`.
+
+**Not yet implemented** (tracked in `tasks/TODO.md` Feature 4.1):
+`--duration SECONDS` (max recording time), `--vad/--no-vad` (disable silence
+detection, record until Enter pressed).
 
 ### `cai watch`
 
@@ -91,18 +99,21 @@ Watch a file for changes and speak new content through speakers.
 # Watch a file, speak any new lines appended to it
 cai watch conversation.txt
 
-# With custom voice
-cai watch --voice af_sky agent_output.txt
+# With custom voice (voice is a global flag)
+cai --voice af_sky watch agent_output.txt
 ```
 
 Behavior:
 - Tracks the file's byte offset. On each change, reads only new content from the last
   known position.
 - If the file is truncated (size shrinks), resets to the beginning.
-- Debounces rapid writes (0.3s) to avoid partial reads.
+- Polls `st_mtime` on a 300ms interval; the interval doubles as a natural
+  debounce (successive writes within one tick coalesce into a single read).
 - Runs until Ctrl+C.
 
-Options: `--voice`, `--speed`, `--lang-code`, `--debounce`
+Options: `FILE` positional only. Voice/speed/lang are global flags. The poll
+interval is a module constant today; a `--debounce` flag is tracked in
+`tasks/TODO.md` Feature 4.2.
 
 ### `cai listen`
 
@@ -112,27 +123,35 @@ Continuously listen to the microphone and append transcriptions to a file.
 # Listen and append to a file
 cai listen output.txt
 
-# With timestamps
-cai listen --timestamp output.txt
+# Calibrate room tone once at startup, then loop
+cai listen --calibrate-noise output.txt
 
-# Also print to stdout for feedback
-# (stdout echo is on by default)
+# Tune the VAD gate for a noisy environment
+cai listen --mic-threshold 0.03 --mic-min-speech 0.25 output.txt
 ```
 
 Behavior:
 - Records one utterance at a time (VAD-based silence detection).
 - Transcribes and appends text to the output file.
-- Prints each transcription to stdout for feedback.
+- Prints each transcription to stderr for feedback.
+- Calibration runs once at startup (opt-in), not per-utterance.
 - Loops until Ctrl+C.
 
-Options: `--timestamp/--no-timestamp`, `--vad-threshold`, `--silence-duration`
+Options: `--mic-threshold`, `--mic-silence`, `--mic-min-speech`,
+`--calibrate-noise/--no-calibrate-noise`.
+
+**Not yet implemented** (tracked in `tasks/TODO.md` Feature 8):
+`--timestamp/--no-timestamp` + `--handle NAME` for stamped log lines.
 
 ### `cai dialogue`
 
 Run watch + listen simultaneously for two-party voice interaction.
 
 ```bash
-# Watch speak-file for text to speak, write mic transcriptions to listen-file
+# Use the default file pair from [dialogue] config
+cai dialogue
+
+# Override file paths
 cai dialogue --speak-file agent.txt --listen-file human.txt
 ```
 
@@ -141,17 +160,36 @@ responds verbally. Their speech is transcribed and appended to `human.txt`, whic
 AI agent reads.
 
 Behavior:
-- Thread 1: Watches `--speak-file` and queues new text for TTS playback.
+- Thread 1: Watches `--speak-file` and plays new text through TTS.
 - Thread 2: Continuously records from the mic and appends transcriptions to `--listen-file`.
 - An inference lock serializes TTS and STT calls (MLX is not thread-safe for concurrent ops).
+- Barge-in and duplex behavior are controlled by the `[dialogue]` config
+  section (see **Duplex modes** below).
 - Both threads shut down gracefully on Ctrl+C.
 
-Options: `--speak-file` (required), `--listen-file` (required), `--voice`, `--speed`,
-`--vad-threshold`, `--silence-duration`, `--timestamp/--no-timestamp`
+Options: `--speak-file` (optional, defaults to `[dialogue].speak_file`),
+`--listen-file` (optional, defaults to `[dialogue].listen_file`),
+`--mic-threshold`, `--mic-silence`, `--mic-min-speech`,
+`--calibrate-noise/--no-calibrate-noise`.
+
+#### Duplex modes
+
+Two orthogonal `[dialogue]` flags in config control mic/speaker interaction:
+
+| `barge_in` | `full_duplex` | Mode | When to use it |
+|------------|---------------|------|----------------|
+| `true`     | `true`        | **Full-duplex + barge-in** (default) | Headphones. Natural conversation — start talking and TTS cuts off. |
+| `true`     | `false`       | **Speaker-safe half-duplex** | Open speakers. Mic is gated while TTS plays so the model never hears itself. |
+| `false`    | `true`        | **Loopback / self-dialogue** | Agent speaks, transcribes its own output, and continues — the feedback loop is the feature. |
+| `false`    | `false`       | **Walkie-talkie** | Strict turn-taking, no interrupts. |
+
+See `README.md` § "Dialogue duplex modes" for the full example config.
 
 ## Shared Configuration
 
-All subcommands inherit the existing config system:
+All subcommands read from the XDG config at
+`~/.config/conversational_ai/config.toml` (auto-created on first run) and
+accept global flag overrides:
 
 ```bash
 # Global options (before subcommand)
@@ -161,26 +199,47 @@ cai --no-tts listen output.txt   # skip loading TTS model
 cai --no-stt speak "hello"       # skip loading STT model
 ```
 
-Config layering (unchanged): hardcoded defaults → TOML file → CLI flags.
+Sections in the config file (see `src/config.py` for the exhaustive schema):
+
+```toml
+[server]       # host, port (default 127.0.0.1:4114) — used by `cai serve`
+[tts]          # model, voice, speed, lang_code
+[stt]          # model
+[models]       # models_dir (local model cache)
+[dialogue]     # speak_file, listen_file, barge_in, full_duplex
+[mic]          # rms_threshold, silence_seconds, min_speech_seconds,
+               # calibrate_noise, calibration_seconds, calibration_multiplier
+[limits]       # max_text_length, max_audio_file_size (API-side only)
+[log]          # log_dir, max_age_days
+```
+
+Config layering: hardcoded Pydantic defaults → TOML file → CLI flags.
 
 ## Audio I/O
 
 - **Playback**: Streaming via mlx-audio's `AudioPlayer` (uses `sounddevice`). TTS chunks
-  are fed to the player as they are generated for low-latency playback.
+  are fed to the player as they are generated for low-latency playback. Accepts a
+  `cancel: threading.Event` for barge-in; when set mid-stream the player flushes
+  instead of draining so the speaker goes quiet immediately.
 - **Recording**: `sounddevice.InputStream` at 16kHz mono. VAD via RMS energy thresholding:
-  recording starts on speech detection and stops after ~1.5s of silence (configurable).
+  recording starts when `min_speech_seconds` of sustained above-threshold audio is
+  observed (pre-latch ring buffer preserves onset) and stops after
+  `silence_seconds` of trailing silence. All knobs are in `[mic]` / CLI flags.
+- **Noise calibration** (opt-in): samples room tone for `calibration_seconds`
+  at startup and sets the effective threshold to
+  `max(rms_threshold, measured_floor × calibration_multiplier)`. An EMA over
+  silence-chunk RMS drifts the effective threshold during long sessions.
 - **Sample rates**: TTS outputs 24kHz; STT expects 16kHz. mlx-audio handles resampling
   internally when given a file path, so recordings are saved as temp WAV files at the
   recording sample rate.
 
 ## File Watching
 
-A dedicated worker thread per watched file polls `path.stat().st_mtime` on a short
-interval (default 100ms) and reads any newly appended bytes from the tracked offset.
-Pure stdlib — no FSEvents, inotify, or cross-platform observer library. Truncation
-is detected by a shrinking file size and resets the offset to 0. See P10 in
-`tasks/BUGS.md` for the rationale behind ripping out the previous event-driven
-observer.
+A dedicated worker thread per watched file polls `path.stat().st_mtime` on a
+300ms interval (`_POLL_INTERVAL` in `src/cli/watch.py`) and reads any newly
+appended bytes from the tracked offset. Pure stdlib — no FSEvents, inotify,
+or cross-platform observer library. Truncation is detected by a shrinking
+file size and resets the offset to 0.
 
 ## Concurrency Model
 
@@ -191,21 +250,38 @@ Threading, not asyncio. Rationale:
 - A shared `threading.Lock` serializes all model inference calls.
 - A shared `threading.Event` coordinates graceful shutdown.
 
-## New Dependencies
+## Dependencies
 
-| Package     | Version  | Purpose                            |
-|-------------|----------|------------------------------------|
-| click       | 8.1.8    | CLI framework                      |
+| Package          | Version   | Purpose                                    |
+|------------------|-----------|--------------------------------------------|
+| click            | 8.1.8     | CLI framework                              |
+| fastapi          | 0.115.12  | HTTP API server                            |
+| uvicorn          | 0.34.2    | ASGI server for FastAPI                    |
+| python-multipart | 0.0.20    | File upload parsing (`/v1/stt`)            |
+| transformers     | 5.3.0     | Pinned — see CONTRIBUTING.md §constraint   |
+| mlx-audio        | editable  | TTS/STT inference on Apple Silicon         |
 
-`sounddevice` and `soundfile` are already transitive dependencies via `mlx-audio[all]`.
+`sounddevice`, `soundfile`, and `numpy` are already transitive dependencies
+via `mlx-audio[all]`.
 
-## Entry Point Changes
+## Entry Point
 
-The current `cai` shell script (from `install.sh`) calls `python main.py`. After this
-change, `cai` will call `python cli.py` which is the Click entry point. The `serve`
-subcommand replaces direct `main.py` invocation.
+The `cai` shell wrapper at `~/.local/bin/cai` (created by `install.sh`) runs
+`uv run --directory ~/.local/share/conversational_ai python cli.py "$@"`.
+`cli.py` re-exports the Click group defined in `src/cli/__init__.py`. The
+`serve` subcommand (`src/cli/serve.py`) is the only path that starts the
+FastAPI app; all other subcommands skip it.
 
-Backward compatibility: `cai` with no subcommand shows help text listing all subcommands.
+`cai` with no subcommand prints the standard Click help text.
+
+## Future work
+
+See `tasks/TODO.md` for the live roadmap:
+
+- Feature 2: wake word / trigger word for `listen` and `dialogue`
+- Feature 3: Claude Code skill + installer
+- Feature 4: `--duration` / `--no-vad` on transcribe, `--debounce` on watch
+- Feature 8: timestamped output with optional speaker handles
 
 ## Success Criteria
 

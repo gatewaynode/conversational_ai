@@ -6,24 +6,43 @@ This document is written for both human contributors and LLM coding agents. It d
 
 ## Architecture overview
 
-The server is a **FastAPI application** that wraps `mlx-audio` inference behind REST endpoints. There are two inference paths:
+The project ships two interfaces sharing one model layer and one config tree:
 
-- **TTS**: `POST /v1/tts` → text → Kokoro (or any mlx-audio TTS model) → WAV bytes
-- **STT**: `POST /v1/stt` → audio upload → Whisper (or any mlx-audio STT model) → JSON text
+- **CLI** (`cai`) — Click group rooted at `src/cli/__init__.py`, re-exported
+  by `cli.py`. Subcommands: `speak`, `transcribe`, `watch`, `listen`,
+  `dialogue`, `serve`.
+- **HTTP API** (`cai serve`) — FastAPI app from `main.py:create_app()`
+  exposing `POST /v1/tts`, `POST /v1/stt`, `GET /v1/health`, `GET /v1/models`
+  on localhost only.
+
+Inference paths:
+
+- **TTS**: text → Kokoro (or any mlx-audio TTS model) → WAV bytes / streamed speaker output
+- **STT**: audio → Whisper (or any mlx-audio STT model) → text
 
 ### Module map
 
 | File | Responsibility |
 |------|---------------|
-| `main.py` | CLI (`argparse`), config loading, FastAPI app factory, `uvicorn.run` |
-| `src/config.py` | `Settings` Pydantic model, `load_config()` (TOML), `build_settings()` (merge) |
-| `src/models.py` | `ModelManager` — loads TTS/STT models once at startup; blocking inference wrappers |
+| `cli.py` | `cai` entry point — re-exports the Click group from `src.cli` |
+| `main.py` | FastAPI `create_app()` factory (used by `cai serve`) |
+| `src/config.py` | `Settings` Pydantic model, XDG config bootstrap, `build_settings()` merge |
+| `src/models.py` | `ModelManager` — loads TTS/STT models; blocking inference wrappers |
 | `src/audio.py` | `tts_result_to_wav_bytes()`, `validate_audio_upload()`, `save_temp_audio()` |
 | `src/schemas.py` | Pydantic request/response models for all endpoints |
 | `src/middleware.py` | `LimitsHeaderMiddleware` — injects `X-Limit-*` headers on every response |
+| `src/logging_setup.py` | Rotating file logger setup (`[log]` config) |
 | `src/routes/tts.py` | `POST /v1/tts` handler |
 | `src/routes/stt.py` | `POST /v1/stt` handler |
 | `src/routes/system.py` | `GET /v1/health`, `GET /v1/models` handlers |
+| `src/cli/__init__.py` | Click group; shared startup (config load, model loading by subcommand) |
+| `src/cli/audio_io.py` | `play_tts_streaming`, `MicRecorder` (VAD + calibration), `mic_recorder_from_settings` |
+| `src/cli/serve.py` | `cai serve` — starts uvicorn on the FastAPI app |
+| `src/cli/speak.py` | `cai speak` — text → TTS → speakers |
+| `src/cli/transcribe.py` | `cai transcribe` — mic → STT → stdout/file |
+| `src/cli/watch.py` | `cai watch` — `TextFileHandler` poller thread; file → TTS |
+| `src/cli/listen.py` | `cai listen` — continuous mic → STT → append to file |
+| `src/cli/dialogue.py` | `cai dialogue` — watch + listen with barge-in / duplex controls |
 
 ### Key design decisions
 
@@ -31,7 +50,9 @@ The server is a **FastAPI application** that wraps `mlx-audio` inference behind 
 
 **`asyncio.to_thread()` for all inference** — mlx inference is blocking (runs on the GPU). Wrapping with `to_thread` keeps the async event loop responsive. Concurrent requests serialize naturally since mlx is single-threaded per process.
 
-**Config layering**: hardcoded Pydantic defaults → `config.toml` → CLI flags. `build_settings()` in `src/config.py` handles the merge. CLI `None` values are skipped so unset flags don't overwrite TOML values.
+**Config layering**: hardcoded Pydantic defaults → XDG `config.toml` → CLI flags. The file lives at `~/.config/conversational_ai/config.toml` and is auto-created with the default template on first run (`ensure_xdg_config()` in `src/config.py`). `build_settings()` handles the merge; CLI `None` values are skipped so unset flags don't overwrite TOML values.
+
+**CLI threading model**: The CLI uses threads (not asyncio) because `sounddevice` callbacks are thread-based and mlx inference is blocking. `dialogue` runs a watcher thread and a listener thread with a shared `threading.Lock` serializing inference and a shared `threading.Event` for graceful shutdown. Barge-in (`barge_event`) and half-duplex gating (`tts_active`) are additional `threading.Event`s — see `src/cli/dialogue.py`.
 
 **Two-layer text length validation**: a hard cap of 10,000 chars in `TTSRequest` (schema level) and a softer configurable cap (`Settings.limits.max_text_length`, default 5,000) enforced in the route handler. Both quote the limit in their error messages.
 
@@ -75,7 +96,7 @@ POST /v1/stt  multipart file
 Tests live in `tests/`. All tests are real behaviour tests — no always-true assertions, no mocks that hide real logic.
 
 ```bash
-uv run pytest          # all 79 tests
+uv run pytest          # all 189 tests
 uv run pytest -v       # verbose
 uv run pytest tests/test_routes.py  # single file
 ```
@@ -84,12 +105,15 @@ uv run pytest tests/test_routes.py  # single file
 
 | File | What it tests |
 |------|--------------|
-| `test_config.py` | TOML loading, CLI override precedence, Pydantic validation |
+| `test_config.py` | TOML loading, CLI override precedence, Pydantic validation, mic section |
 | `test_audio.py` | WAV encoding round-trips, upload validation, temp file lifecycle |
 | `test_schemas.py` | Request/response Pydantic models, field validators |
+| `test_models.py` | `ModelManager` load + inference wrappers (with fakes) |
 | `test_middleware.py` | `X-Limit-*` headers appear on 2xx and error responses |
 | `test_routes.py` | All route handlers via `TestClient` with a `FakeModelManager` |
 | `test_integration.py` | Full app stack (real middlewares + real routes) with fake inference |
+| `test_cli_audio_io.py` | `MicRecorder` VAD, min-speech gate, calibration, EMA, pre-latch ring, factory helper |
+| `test_cli_subcommands.py` | Click subcommands via `CliRunner` (patched model manager + recorder factory) |
 
 ### Adding a new test
 
@@ -141,11 +165,11 @@ uv run ruff check src tests    # lint
 
 ## Switching inference models
 
-The server loads whichever model names are in `config.toml` (or passed via CLI). To use a different model:
+The CLI / server load whichever model names are in the XDG config (or passed via `--tts-model` / `--stt-model`). To use a different model:
 
 ```bash
-uv run python main.py --tts-model mlx-community/outetts-0.3-500M-bf16
-uv run python main.py --stt-model mlx-community/whisper-large-v3-mlx-4bit
+cai --tts-model mlx-community/outetts-0.3-500M-bf16 speak "hello"
+cai --stt-model mlx-community/whisper-large-v3-mlx-4bit transcribe
 ```
 
 Models are downloaded automatically from HuggingFace Hub on first use and cached in `~/.cache/huggingface/`. The `ModelManager` in `src/models.py` calls `mlx_audio.tts.load()` and `mlx_audio.stt.load()` which auto-detect model type, so no code changes are needed to switch models.
@@ -157,13 +181,21 @@ Models are downloaded automatically from HuggingFace Hub on first use and cached
 ### Run the server
 
 ```bash
-uv run python main.py
+cai serve
 ```
 
-### Test a TTS request
+### Try the CLI
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/tts \
+cai speak "Hello, world!"      # text → speakers
+cai transcribe                 # mic → stdout
+cai listen /tmp/notes.txt      # mic → append to file (Ctrl+C to stop)
+```
+
+### Test a TTS request (against `cai serve`)
+
+```bash
+curl -X POST http://127.0.0.1:4114/v1/tts \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello, world!"}' \
   -o speech.wav && afplay speech.wav
@@ -172,14 +204,14 @@ curl -X POST http://127.0.0.1:8000/v1/tts \
 ### Test an STT request
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/stt \
+curl -X POST http://127.0.0.1:4114/v1/stt \
   -F "file=@speech.wav;type=audio/wav"
 ```
 
 ### Check active limits from headers
 
 ```bash
-curl -sI -X POST http://127.0.0.1:8000/v1/tts \
+curl -sI -X POST http://127.0.0.1:4114/v1/tts \
   -H "Content-Type: application/json" \
   -d '{"text":"x"}' \
   | grep -i x-limit

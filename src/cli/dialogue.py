@@ -10,7 +10,12 @@ from pathlib import Path
 import click
 
 from src.cli import CliContext
-from src.cli.audio_io import MicRecorder, play_tts_streaming
+from src.cli.audio_io import (
+    AudioDeviceError,
+    MicRecorder,
+    mic_recorder_from_settings,
+    play_tts_streaming,
+)
 from src.cli.watch import TextFileHandler
 
 logger = logging.getLogger(__name__)
@@ -71,6 +76,9 @@ def _make_speak_callback(
                 finally:
                     if tts_active is not None:
                         tts_active.clear()
+        except AudioDeviceError:
+            logger.exception("Audio output device error — shutting down")
+            shutdown.set()
         except Exception:
             logger.exception("Error speaking new text")
 
@@ -84,6 +92,7 @@ def _listener_loop(
     shutdown: threading.Event,
     barge_event: threading.Event | None = None,
     tts_active: threading.Event | None = None,
+    recorder: MicRecorder | None = None,
 ) -> None:
     """Record mic utterances, transcribe, and append to listen_path.
 
@@ -97,7 +106,8 @@ def _listener_loop(
     from being re-transcribed on open-speaker setups. `None` when
     full-duplex is enabled.
     """
-    recorder = MicRecorder()
+    if recorder is None:
+        recorder = MicRecorder()
     click.echo("Listener ready — speak to transcribe.", err=True)
 
     consecutive_failures = 0
@@ -112,6 +122,10 @@ def _listener_loop(
                 break
         try:
             audio_path = recorder.record(on_speech_start=barge_event)
+        except AudioDeviceError as exc:
+            click.echo(str(exc), err=True)
+            shutdown.set()
+            break
         except Exception:
             consecutive_failures += 1
             logger.exception(
@@ -170,8 +184,40 @@ def _listener_loop(
     type=click.Path(),
     help="Append STT transcriptions to this file (overrides config).",
 )
+@click.option(
+    "--mic-threshold",
+    type=float,
+    default=None,
+    help="Override RMS threshold for speech detection.",
+)
+@click.option(
+    "--mic-silence",
+    type=float,
+    default=None,
+    help="Override trailing silence (seconds) that ends an utterance.",
+)
+@click.option(
+    "--mic-min-speech",
+    type=float,
+    default=None,
+    help="Override minimum sustained speech (seconds) required to latch.",
+)
+@click.option(
+    "--calibrate-noise/--no-calibrate-noise",
+    "calibrate_noise",
+    default=None,
+    help="Sample room tone at startup to set the effective threshold.",
+)
 @click.pass_obj
-def dialogue(ctx_obj: CliContext, speak_file: str | None, listen_file: str | None) -> None:
+def dialogue(
+    ctx_obj: CliContext,
+    speak_file: str | None,
+    listen_file: str | None,
+    mic_threshold: float | None,
+    mic_silence: float | None,
+    mic_min_speech: float | None,
+    calibrate_noise: bool | None,
+) -> None:
     """Run TTS (file watcher) and STT (mic listener) simultaneously.
 
     New content appended to SPEAK_FILE is spoken aloud. Mic utterances are
@@ -198,6 +244,25 @@ def dialogue(ctx_obj: CliContext, speak_file: str | None, listen_file: str | Non
 
     mode = f"barge_in={d.barge_in} full_duplex={d.full_duplex}"
 
+    # Build the mic recorder once so calibration amortizes across the session.
+    mic = ctx_obj.settings.mic.model_copy(
+        update={
+            k: v
+            for k, v in {
+                "rms_threshold": mic_threshold,
+                "silence_seconds": mic_silence,
+                "min_speech_seconds": mic_min_speech,
+            }.items()
+            if v is not None
+        }
+    )
+    recorder = mic_recorder_from_settings(mic, calibrate_override=calibrate_noise)
+    try:
+        if recorder.calibrate_noise:
+            recorder.calibrate()
+    except AudioDeviceError as exc:
+        raise click.ClickException(str(exc)) from exc
+
     # --- Watcher (file → TTS) ---
     handler = TextFileHandler(
         speak_path,
@@ -209,7 +274,7 @@ def dialogue(ctx_obj: CliContext, speak_file: str | None, listen_file: str | Non
     # --- Listener (mic → STT → file) ---
     listener_thread = threading.Thread(
         target=_listener_loop,
-        args=(listen_path, ctx_obj, inference_lock, shutdown, barge_event, tts_active),
+        args=(listen_path, ctx_obj, inference_lock, shutdown, barge_event, tts_active, recorder),
         daemon=True,
         name="dialogue-listener",
     )

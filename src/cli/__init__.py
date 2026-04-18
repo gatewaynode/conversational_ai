@@ -2,23 +2,38 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 
+from src.cli.audio_io import mic_recorder_from_settings, play_tts_streaming
 from src.config import Settings, build_settings
 from src.logging_setup import setup_logging
 from src.models import ModelManager
 
+if TYPE_CHECKING:
+    from src.cli.audio_io import MicRecorder
+
 
 @dataclass
 class CliContext:
-    """Shared state passed via Click's ctx.obj to every subcommand."""
+    """Shared state passed via Click's ctx.obj to every subcommand.
+
+    `recorder_factory` and `speaker_factory` are the test seams: subcommands
+    call these instead of importing `mic_recorder_from_settings` /
+    `play_tts_streaming` directly, so tests override one attribute on
+    `ctx.obj` rather than chasing module-level patch targets.
+    """
 
     settings: Settings
     mm: ModelManager | None
+    recorder_factory: Callable[..., MicRecorder] = field(
+        default=mic_recorder_from_settings
+    )
+    speaker_factory: Callable[..., None] = field(default=play_tts_streaming)
 
 
 # Subcommand → (needs_tts, needs_stt). `serve` loads models inside its FastAPI

@@ -36,6 +36,23 @@ listen_file = "~/.local/share/conversational_ai/listen.txt"
 barge_in = true
 full_duplex = true
 
+[mic]
+# RMS energy above which a chunk is considered speech. 0.01 is a reasonable
+# default on a quiet room; noisier environments should calibrate instead of
+# guessing.
+rms_threshold = 0.01
+# Trailing silence required to end an utterance.
+silence_seconds = 1.5
+# Minimum sustained speech (above threshold) required to latch a recording.
+# Filters single-chunk transients like keyboard clacks and door slams.
+min_speech_seconds = 0.15
+# If true, sample room tone at startup and raise the effective threshold to
+# max(rms_threshold, measured_floor * calibration_multiplier). Opt-in because
+# it adds ~1s of startup latency.
+calibrate_noise = false
+calibration_seconds = 1.0
+calibration_multiplier = 3.0
+
 [limits]
 max_text_length = 5000
 max_audio_file_size = 26214400  # 25 MB
@@ -83,12 +100,22 @@ class DialogueSettings(BaseModel):
     full_duplex: bool = True
 
 
+class MicSettings(BaseModel):
+    rms_threshold: float = Field(default=0.01, ge=0.0, le=1.0)
+    silence_seconds: float = Field(default=1.5, gt=0.0, le=30.0)
+    min_speech_seconds: float = Field(default=0.15, ge=0.0, le=5.0)
+    calibrate_noise: bool = False
+    calibration_seconds: float = Field(default=1.0, gt=0.0, le=10.0)
+    calibration_multiplier: float = Field(default=3.0, ge=1.0, le=20.0)
+
+
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
     stt: STTSettings = Field(default_factory=STTSettings)
     models: ModelsSettings = Field(default_factory=ModelsSettings)
     dialogue: DialogueSettings = Field(default_factory=DialogueSettings)
+    mic: MicSettings = Field(default_factory=MicSettings)
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 

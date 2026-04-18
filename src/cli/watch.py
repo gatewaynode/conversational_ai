@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 
 from src.cli import CliContext
-from src.cli.audio_io import play_tts_streaming
+from src.cli.audio_io import AudioDeviceError, play_tts_streaming
 
 logger = logging.getLogger(__name__)
 
@@ -103,17 +103,24 @@ def watch(ctx_obj: CliContext, file: str) -> None:
     path.touch(exist_ok=True)
 
     s = ctx_obj.settings.tts
+    audio_error: threading.Event = threading.Event()
 
     def on_new_text(text: str) -> None:
-        play_tts_streaming(ctx_obj.mm, text, s.voice, s.speed, s.lang_code)
+        try:
+            play_tts_streaming(ctx_obj.mm, text, s.voice, s.speed, s.lang_code)
+        except AudioDeviceError as exc:
+            click.echo(str(exc), err=True)
+            audio_error.set()
 
     handler = TextFileHandler(path, on_new_text)
     click.echo(f"Watching {path} — press Ctrl+C to stop.", err=True)
     try:
-        while True:
+        while not audio_error.is_set():
             time.sleep(1)
     except KeyboardInterrupt:
         pass
     finally:
         handler.stop()
+        if audio_error.is_set():
+            raise click.ClickException("Audio output device error — see above.")
         click.echo("Stopped.", err=True)

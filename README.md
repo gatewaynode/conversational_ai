@@ -1,6 +1,6 @@
 # conversational-ai
 
-A localhost TTS/STT API server built on [mlx-audio](https://github.com/Blaizzy/mlx-audio) for Apple Silicon. Exposes REST endpoints that a web page in Chrome (or any local client) can call to synthesise speech from text and transcribe audio files back to text.
+A terminal-first TTS/STT platform built on [mlx-audio](https://github.com/Blaizzy/mlx-audio) for Apple Silicon. The primary interface is the `cai` CLI — speak text, transcribe speech, watch files, and run two-way voice dialogues from the terminal. A companion HTTP API (`cai serve`) exposes the same TTS/STT models to browser-based clients that can't invoke the CLI directly.
 
 ## Requirements
 
@@ -18,11 +18,15 @@ cd conversational_ai
 # Install dependencies (creates .venv automatically)
 uv sync
 
-# Start the HTTP API server (downloads models on first run ~500 MB)
+# Try the CLI (downloads models on first run ~500 MB)
+uv run python cli.py speak "Hello, world!"
+
+# Or start the HTTP API for browser clients
 uv run python cli.py serve
 ```
 
-Server starts at `http://127.0.0.1:4114`. Visit `/docs` for the interactive OpenAPI UI.
+The HTTP server (when `cai serve` is running) listens at
+`http://127.0.0.1:4114`. Visit `/docs` for the interactive OpenAPI UI.
 
 ## Installation (persistent `cai` command)
 
@@ -44,36 +48,64 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Configuration
 
-Edit `config.toml` to change defaults:
+The config file lives at `~/.config/conversational_ai/config.toml` and is
+auto-created with the default template on first run. Edit it to change
+defaults:
 
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8000
+port = 4114
 
 [tts]
-model    = "mlx-community/Kokoro-82M-bf16"
-voice    = "af_heart"
-speed    = 1.0
+model     = "mlx-community/Kokoro-82M-bf16"
+voice     = "af_heart"
+speed     = 1.0
 lang_code = "a"
 
 [stt]
 model = "mlx-community/whisper-large-v3-turbo-asr-fp16"
 
+[models]
+models_dir = "~/.lmstudio/models"
+
+[dialogue]
+speak_file  = "~/.local/share/conversational_ai/speak.txt"
+listen_file = "~/.local/share/conversational_ai/listen.txt"
+barge_in    = true   # VAD rising edge cancels in-flight TTS
+full_duplex = true   # mic stays hot while TTS is playing
+
+[mic]
+rms_threshold          = 0.01   # RMS above which a chunk counts as speech
+silence_seconds        = 1.5    # trailing silence that ends an utterance
+min_speech_seconds     = 0.15   # sustained speech required to latch
+calibrate_noise        = false  # sample room tone at startup (opt-in)
+calibration_seconds    = 1.0
+calibration_multiplier = 3.0
+
 [limits]
 max_text_length     = 5000      # characters
 max_audio_file_size = 26214400  # bytes (25 MB)
+
+[log]
+log_dir      = "~/.local/state/conversational_ai"
+max_age_days = 7
 ```
+
+See [Dialogue duplex modes](#dialogue-duplex-modes) for the `barge_in` /
+`full_duplex` matrix.
 
 Any value can be overridden at launch with a CLI flag:
 
 ```bash
-uv run python main.py --voice af_sky --speed 1.2 --port 9000
-uv run python main.py --tts-model mlx-community/Kokoro-82M-bf16 \
-                      --stt-model mlx-community/whisper-large-v3-turbo-asr-fp16
+cai --voice af_sky --speed 1.2 speak "Good morning"
+cai --tts-model mlx-community/Kokoro-82M-bf16 \
+    --stt-model mlx-community/whisper-large-v3-turbo-asr-fp16 \
+    transcribe
 ```
 
-Run `uv run python main.py --help` for the full flag list.
+Run `cai --help` for the full global flag list, or `cai <subcommand> --help`
+for per-subcommand options.
 
 ## API
 
@@ -97,7 +129,7 @@ Convert text to speech. Returns a WAV audio file.
 **Response**: `audio/wav` binary
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/tts \
+curl -X POST http://127.0.0.1:4114/v1/tts \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello, world!"}' \
   -o speech.wav
@@ -120,7 +152,7 @@ Accepted types: WAV, MP3, MP4, OGG, FLAC, WebM, AAC.
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/stt \
+curl -X POST http://127.0.0.1:4114/v1/stt \
   -F "file=@speech.wav;type=audio/wav"
 ```
 
@@ -148,7 +180,7 @@ The server allows requests from `http://localhost:*` and `http://127.0.0.1:*` on
 ## Development
 
 ```bash
-# Run tests
+# Run tests (189 as of 2026-04-17)
 uv run pytest
 
 # Lint / format
@@ -253,44 +285,67 @@ cai dialogue --speak-file scratch.txt --listen-file scratch.txt
 
 ### Global options
 
-All subcommands accept these options before the subcommand name:
+All subcommands accept these options **before** the subcommand name:
 
 ```
---config PATH        Path to TOML config file
+--config PATH        Path to TOML config file (overrides XDG path)
 --tts-model MODEL    Override TTS model
 --stt-model MODEL    Override STT model
 --voice VOICE        Override TTS voice
---speed SPEED        Override TTS speed
+--speed SPEED        Override TTS speed (0.1–5.0)
 --lang-code CODE     Override TTS language code
+--models-dir DIR     Local models directory (default: ~/.lmstudio/models)
 --no-tts             Skip loading the TTS model
 --no-stt             Skip loading the STT model
+```
+
+### Mic flags (transcribe / listen / dialogue)
+
+These subcommands share a common set of per-command flags for tuning the
+voice-activity detector and opting into noise calibration:
+
+```
+--mic-threshold FLOAT                   Override [mic].rms_threshold
+--mic-silence SECONDS                   Override [mic].silence_seconds
+--mic-min-speech SECONDS                Override [mic].min_speech_seconds
+--calibrate-noise / --no-calibrate-noise
+                                        Sample room tone at startup
+```
+
+Example:
+
+```bash
+# Tighten the gate and calibrate before a noisy-kitchen dictation session
+cai listen --mic-threshold 0.03 --mic-min-speech 0.25 --calibrate-noise out.txt
 ```
 
 ## Project layout
 
 ```
 conversational_ai/
-├── cli.py               # Unified `cai` entry point (Click group + subcommands)
+├── cli.py               # `cai` entry point — re-exports src.cli.cli
 ├── main.py              # FastAPI app factory (used by `cai serve`)
-├── config.toml          # Default configuration
 ├── src/
-│   ├── config.py        # TOML + CLI settings (Pydantic)
+│   ├── config.py        # XDG TOML + CLI settings (Pydantic)
 │   ├── models.py        # ModelManager — TTS/STT loader and inference
 │   ├── audio.py         # WAV encoding, upload validation, temp files
 │   ├── schemas.py       # Pydantic request/response models
 │   ├── middleware.py    # X-Limit-* response headers
+│   ├── logging_setup.py # Log rotation + setup
 │   ├── routes/
 │   │   ├── tts.py       # POST /v1/tts
 │   │   ├── stt.py       # POST /v1/stt
 │   │   └── system.py    # GET /v1/health, GET /v1/models
 │   └── cli/
-│       ├── audio_io.py  # Streaming TTS playback + mic recording (VAD)
+│       ├── __init__.py  # Click group, shared startup (config + models)
+│       ├── audio_io.py  # Streaming TTS playback + mic recording (VAD, calibration)
+│       ├── serve.py     # `cai serve`
 │       ├── speak.py     # `cai speak`
-│       ├── transcribe.py # `cai transcribe`
+│       ├── transcribe.py# `cai transcribe`
 │       ├── watch.py     # `cai watch`
 │       ├── listen.py    # `cai listen`
 │       └── dialogue.py  # `cai dialogue`
-└── tests/               # pytest test suite (90+ tests)
+└── tests/               # pytest test suite (189 tests)
 ```
 
 ## License

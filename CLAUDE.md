@@ -1,13 +1,21 @@
 ## Project Context
 
-This project is a **TTS/STT API server** built on `mlx-audio` for use by locally hosted web apps.
-It exposes REST endpoints for text-to-speech and speech-to-text over HTTP (localhost only).
+This project is a **CLI for local TTS/STT** on Apple Silicon, built on
+`mlx-audio`. The primary interface is the `cai` command — `speak`,
+`transcribe`, `watch`, `listen`, `dialogue`. A companion HTTP API
+(`cai serve`) is available for browser-based clients that cannot invoke the
+CLI directly, but active development is on the CLI side (dictation,
+duplex-mode dialogue, wake word, timestamped logs, Claude Code skills).
 
 Key stack:
 - **Python 3.12+** managed by `uv`
-- **FastAPI + uvicorn** for the HTTP API layer
-- **mlx-audio** (local path `../mlx-audio`) for TTS and STT inference on Apple Silicon
-- Models loaded from HuggingFace Hub or local paths via `mlx_audio.tts.load` / `mlx_audio.stt.load`
+- **Click** for the CLI (entry point `cli.py` → `src/cli/`)
+- **FastAPI + uvicorn** for the companion HTTP API (`cai serve`, `main.py`)
+- **sounddevice** for streaming TTS playback and VAD-gated mic capture
+- **mlx-audio** (local editable path `../mlx-audio`) for TTS/STT inference
+- Models loaded from HuggingFace Hub or local paths via
+  `mlx_audio.tts.load` / `mlx_audio.stt.load`
+- XDG config at `~/.config/conversational_ai/config.toml` (auto-bootstrapped)
 
 ---
 

@@ -152,3 +152,61 @@ def test_invalid_speed_raises() -> None:
 def test_speed_upper_bound_raises() -> None:
     with pytest.raises(Exception):
         Settings(tts={"speed": 10.0})
+
+
+# ---------------------------------------------------------------------------
+# [mic] section — Feature 1 noise floor controls
+# ---------------------------------------------------------------------------
+
+
+def test_mic_defaults() -> None:
+    s = build_settings(toml_path=None)
+    assert s.mic.rms_threshold == 0.01
+    assert s.mic.silence_seconds == 1.5
+    assert s.mic.min_speech_seconds == 0.15
+    assert s.mic.calibrate_noise is False
+    assert s.mic.calibration_seconds == 1.0
+    assert s.mic.calibration_multiplier == 3.0
+
+
+def test_mic_toml_overrides(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[mic]\n"
+        "rms_threshold = 0.05\n"
+        "silence_seconds = 2.5\n"
+        "min_speech_seconds = 0.3\n"
+        "calibrate_noise = true\n"
+        "calibration_seconds = 2.0\n"
+        "calibration_multiplier = 5.0\n",
+        encoding="utf-8",
+    )
+    s = build_settings(toml_path=cfg)
+    assert s.mic.rms_threshold == 0.05
+    assert s.mic.silence_seconds == 2.5
+    assert s.mic.min_speech_seconds == 0.3
+    assert s.mic.calibrate_noise is True
+    assert s.mic.calibration_seconds == 2.0
+    assert s.mic.calibration_multiplier == 5.0
+
+
+def test_mic_cli_overrides_toml(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[mic]\nrms_threshold = 0.05\nmin_speech_seconds = 0.3\n",
+        encoding="utf-8",
+    )
+    overrides = {"mic": {"rms_threshold": 0.1}}
+    s = build_settings(toml_path=cfg, cli_overrides=overrides)
+    assert s.mic.rms_threshold == 0.1
+    assert s.mic.min_speech_seconds == 0.3  # TOML preserved
+
+
+def test_mic_rejects_negative_threshold() -> None:
+    with pytest.raises(Exception):
+        Settings(mic={"rms_threshold": -0.1})
+
+
+def test_mic_rejects_multiplier_below_one() -> None:
+    with pytest.raises(Exception):
+        Settings(mic={"calibration_multiplier": 0.5})

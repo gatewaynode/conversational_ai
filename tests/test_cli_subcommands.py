@@ -154,8 +154,8 @@ class TestTranscribe:
         ctx = _make_ctx(stt_text="transcribed text")
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.MicRecorder") as MockRecorder:
-            MockRecorder.return_value.record.return_value = self._fake_record()
+        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
+            MockFactory.return_value.record.return_value = self._fake_record()
             result = runner.invoke(transcribe, [], obj=ctx)
 
         assert result.exit_code == 0, result.output
@@ -166,8 +166,8 @@ class TestTranscribe:
         ctx = _make_ctx(stt_text="saved to file")
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.MicRecorder") as MockRecorder:
-            MockRecorder.return_value.record.return_value = self._fake_record()
+        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
+            MockFactory.return_value.record.return_value = self._fake_record()
             result = runner.invoke(transcribe, ["-o", str(out)], obj=ctx)
 
         assert result.exit_code == 0, result.output
@@ -181,8 +181,8 @@ class TestTranscribe:
         ctx = _make_ctx(stt_text="appended")
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.MicRecorder") as MockRecorder:
-            MockRecorder.return_value.record.return_value = self._fake_record()
+        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
+            MockFactory.return_value.record.return_value = self._fake_record()
             runner.invoke(transcribe, ["-o", str(out)], obj=ctx)
 
         assert out.read_text() == "existing\nappended\n"
@@ -200,8 +200,8 @@ class TestTranscribe:
         ctx.mm.generate_stt.side_effect = RuntimeError("STT failed")
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.MicRecorder") as MockRecorder:
-            MockRecorder.return_value.record.side_effect = fake_record
+        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
+            MockFactory.return_value.record.side_effect = fake_record
             runner.invoke(transcribe, [], obj=ctx)
 
         if tmp_path_holder:
@@ -307,8 +307,8 @@ class TestListenCommand:
                 return p
             raise KeyboardInterrupt
 
-        with patch("src.cli.listen.MicRecorder") as MockRecorder:
-            MockRecorder.return_value.record.side_effect = fake_record
+        with patch("src.cli.listen.mic_recorder_from_settings") as MockFactory:
+            MockFactory.return_value.record.side_effect = fake_record
             result = runner.invoke(listen, [str(out)], obj=ctx)
 
         assert result.exit_code == 0, result.output
@@ -336,8 +336,8 @@ class TestListenCommand:
                 return Path(tmp.name)
             raise KeyboardInterrupt
 
-        with patch("src.cli.listen.MicRecorder") as MockRecorder:
-            MockRecorder.return_value.record.side_effect = fake_record_once
+        with patch("src.cli.listen.mic_recorder_from_settings") as MockFactory:
+            MockFactory.return_value.record.side_effect = fake_record_once
             runner.invoke(listen, [str(out)], obj=ctx)
 
         # Nothing written because stripped text was empty.
@@ -764,7 +764,7 @@ class TestDialogueCommand:
 
         with (
             patch("src.cli.dialogue.TextFileHandler", return_value=handler_instance),
-            patch("src.cli.dialogue.MicRecorder", return_value=recorder_mock),
+            patch("src.cli.dialogue.mic_recorder_from_settings", return_value=recorder_mock),
             patch.object(threading.Thread, "join", fake_join),
         ):
             result = runner.invoke(dialogue, [], obj=ctx)

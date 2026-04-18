@@ -7,7 +7,7 @@ import sys
 import click
 
 from src.cli import CliContext
-from src.cli.audio_io import play_tts_streaming
+from src.cli.audio_io import AudioDeviceError, play_tts_streaming
 
 
 @click.command()
@@ -40,4 +40,7 @@ def speak(ctx_obj: CliContext, text: str | None, text_file: str | None) -> None:
         raise click.UsageError("No text to speak.")
 
     s = ctx_obj.settings.tts
-    play_tts_streaming(ctx_obj.mm, content, s.voice, s.speed, s.lang_code)
+    try:
+        play_tts_streaming(ctx_obj.mm, content, s.voice, s.speed, s.lang_code)
+    except AudioDeviceError as exc:
+        raise click.ClickException(str(exc)) from exc
