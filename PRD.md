@@ -138,7 +138,9 @@ Behavior:
 - Loops until Ctrl+C.
 
 Options: `--mic-threshold`, `--mic-silence`, `--mic-min-speech`,
-`--calibrate-noise/--no-calibrate-noise`.
+`--calibrate-noise/--no-calibrate-noise`, `--wake-word WORD`, `--no-wake-word`,
+`--wake-timeout SECONDS`, `--include-trigger/--strip-trigger`,
+`--wake-alert/--no-wake-alert`. See **Wake word** below for gating behavior.
 
 **Not yet implemented** (tracked in `tasks/TODO.md` Feature 8):
 `--timestamp/--no-timestamp` + `--handle NAME` for stamped log lines.
@@ -170,7 +172,9 @@ Behavior:
 Options: `--speak-file` (optional, defaults to `[dialogue].speak_file`),
 `--listen-file` (optional, defaults to `[dialogue].listen_file`),
 `--mic-threshold`, `--mic-silence`, `--mic-min-speech`,
-`--calibrate-noise/--no-calibrate-noise`.
+`--calibrate-noise/--no-calibrate-noise`, `--wake-word WORD`, `--no-wake-word`,
+`--wake-timeout SECONDS`, `--include-trigger/--strip-trigger`,
+`--wake-alert/--no-wake-alert`.
 
 #### Duplex modes
 
@@ -184,6 +188,46 @@ Two orthogonal `[dialogue]` flags in config control mic/speaker interaction:
 | `false`    | `false`       | **Walkie-talkie** | Strict turn-taking, no interrupts. |
 
 See `README.md` § "Dialogue duplex modes" for the full example config.
+
+### Wake word
+
+`cai listen` and `cai dialogue` support an optional trigger-word gate that
+filters Whisper's output before it reaches the sink file. Until a trigger
+is spoken the gate drops every utterance; once matched it opens a sliding
+window during which every utterance passes through. Silence past
+`timeout_seconds` re-arms the gate.
+
+Matching rule: the trigger must appear at the start of an utterance
+**followed by punctuation** (`. , ! ? ; :`) or end-of-utterance. This
+distinguishes addressing the system (`"Computer, hello"`) from using the
+word in conversation (`"Computer science is cool"` — rejected). It relies
+on Whisper's pause-based punctuation, so a deliberate pause after the
+trigger is what actually opens the gate.
+
+On activation the gate echoes `[wake] 'computer' heard — listening` to
+stderr and (unless `--no-wake-alert`) plays a short two-tone chime.
+Subsequent utterances in the open window are not re-announced.
+
+Config (`[wake_word]`):
+
+```toml
+[wake_word]
+enabled         = false       # turn the gate on globally
+word            = "computer"  # trigger word
+include_trigger = false       # false strips trigger + punctuation from the line
+timeout_seconds = 30.0        # silence required to re-arm
+alert_sound     = true        # play activation chime
+```
+
+CLI overrides: `--wake-word WORD` forces `enabled=true` and sets the
+trigger; `--no-wake-word` forces the gate off regardless of config.
+`--wake-timeout`, `--include-trigger/--strip-trigger`, and
+`--wake-alert/--no-wake-alert` override the corresponding fields. The gate
+composes with duplex modes — it's a third text-layer filter above
+`barge_in` (VAD level) and `full_duplex` (mic level).
+
+Implementation uses the already-loaded Whisper model; no separate
+wake-word model is loaded.
 
 ## Shared Configuration
 
@@ -209,6 +253,7 @@ Sections in the config file (see `src/config.py` for the exhaustive schema):
 [dialogue]     # speak_file, listen_file, barge_in, full_duplex
 [mic]          # rms_threshold, silence_seconds, min_speech_seconds,
                # calibrate_noise, calibration_seconds, calibration_multiplier
+[wake_word]    # enabled, word, include_trigger, timeout_seconds, alert_sound
 [limits]       # max_text_length, max_audio_file_size (API-side only)
 [log]          # log_dir, max_age_days
 ```
@@ -278,7 +323,6 @@ FastAPI app; all other subcommands skip it.
 
 See `tasks/TODO.md` for the live roadmap:
 
-- Feature 2: wake word / trigger word for `listen` and `dialogue`
 - Feature 3: Claude Code skill + installer
 - Feature 4: `--duration` / `--no-vad` on transcribe, `--debounce` on watch
 - Feature 8: timestamped output with optional speaker handles

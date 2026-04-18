@@ -53,6 +53,25 @@ calibrate_noise = false
 calibration_seconds = 1.0
 calibration_multiplier = 3.0
 
+[wake_word]
+# Require the user to say a trigger word before STT output passes through to
+# the sink file. Reuses the already-loaded Whisper model on short utterances
+# — no extra wake-word model is loaded.
+enabled = false
+# Trigger must be followed by punctuation or end-of-utterance to match.
+# "Computer, hello" → passes "hello"; "Computer science is cool" → no match.
+# Pick a word you don't normally start sentences with.
+word = "computer"
+# When true, the trigger stays in the emitted line; when false (default) it
+# is stripped along with the trailing punctuation and leading whitespace.
+include_trigger = false
+# Seconds of silence after the last passed utterance before the gate
+# re-arms and requires the trigger again.
+timeout_seconds = 30.0
+# Play a short two-tone chime on trigger activation. stderr echo fires
+# regardless.
+alert_sound = true
+
 [limits]
 max_text_length = 5000
 max_audio_file_size = 26214400  # 25 MB
@@ -109,6 +128,14 @@ class MicSettings(BaseModel):
     calibration_multiplier: float = Field(default=3.0, ge=1.0, le=20.0)
 
 
+class WakeWordSettings(BaseModel):
+    enabled: bool = False
+    word: str = "computer"
+    include_trigger: bool = False
+    timeout_seconds: float = Field(default=30.0, gt=0.0, le=600.0)
+    alert_sound: bool = True
+
+
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)
@@ -116,6 +143,7 @@ class Settings(BaseModel):
     models: ModelsSettings = Field(default_factory=ModelsSettings)
     dialogue: DialogueSettings = Field(default_factory=DialogueSettings)
     mic: MicSettings = Field(default_factory=MicSettings)
+    wake_word: WakeWordSettings = Field(default_factory=WakeWordSettings)
     limits: LimitsSettings = Field(default_factory=LimitsSettings)
     log: LogSettings = Field(default_factory=LogSettings)
 

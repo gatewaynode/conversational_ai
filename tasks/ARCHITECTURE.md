@@ -46,7 +46,8 @@ conversational_ai/
 │       ├── transcribe.py       # `cai transcribe` — mic → STT → stdout
 │       ├── watch.py            # `cai watch` — file changes → TTS → speakers
 │       ├── listen.py           # `cai listen` — mic → STT → append to file
-│       └── dialogue.py         # `cai dialogue` — watch + listen simultaneously
+│       ├── dialogue.py         # `cai dialogue` — watch + listen simultaneously
+│       └── wake_word.py        # WakeWordGate + build_wake_gate (listen/dialogue gate)
 └── tests/
     ├── __init__.py
     ├── test_config.py          # TOML + CLI override merge, section validators
@@ -242,6 +243,13 @@ calibrate_noise = false       # sample room tone at startup
 calibration_seconds = 1.0
 calibration_multiplier = 3.0
 
+[wake_word]
+enabled = false               # gate STT output on a trigger word (listen/dialogue)
+word = "computer"             # trigger; must be followed by punctuation or EOL
+include_trigger = false       # keep the trigger word in the emitted line
+timeout_seconds = 30.0        # re-arm after this much silence
+alert_sound = true            # play a short chime on activation
+
 [limits]
 max_text_length = 5000
 max_audio_file_size = 26214400  # 25 MB
@@ -251,8 +259,9 @@ log_dir = "~/.local/state/conversational_ai"
 max_age_days = 7
 ```
 
-`[wake_word]` is reserved for the planned wake-word detector (see
-`tasks/TODO.md` Feature 2) — not yet loaded.
+`[wake_word]` is a `WakeWordSettings` submodel used by the
+`src/cli/wake_word.py` gate (see **Wake-word gate** below). Disabled by
+default.
 
 ### CLI Overrides
 
@@ -286,6 +295,19 @@ max_age_days = 7
 --speak-file PATH   Override [dialogue].speak_file (file to read + speak)
 --listen-file PATH  Override [dialogue].listen_file (file to append STT to)
 ```
+
+**Wake-word flags** (shared by `listen` and `dialogue`):
+
+```
+--wake-word WORD                       Enable gating; forces enabled=true and sets word
+--no-wake-word                         Force-disable regardless of config
+--wake-timeout SECONDS                 Override [wake_word].timeout_seconds
+--include-trigger / --strip-trigger    Keep or strip the trigger from the emitted line
+--wake-alert / --no-wake-alert         Play or suppress the activation chime
+```
+
+`--wake-word` and `--no-wake-word` are mutually exclusive — specifying
+both raises `click.UsageError`.
 
 ### Layering Order
 
@@ -429,17 +451,29 @@ sequenceDiagram
 
 ### Dialogue Mode Threading
 
-Two orthogonal flags in `[dialogue]` control duplex behavior:
+Three orthogonal gates stack on the listener path:
 
-- `barge_in` — when true, a mic rising edge (`on_speech_start`) fires
-  `barge_event`, which `play_tts_streaming(cancel=…)` consumes to flush the
-  `AudioPlayer` immediately. Mid-sentence TTS stops the moment the user
-  starts talking.
-- `full_duplex` — when true, the mic stays hot during TTS playback. When
-  false, `tts_active` gates the listener loop so the mic is deaf while TTS
-  is speaking (open-speaker safety; mic can't hear the model's own output).
+- `barge_in` (VAD level) — when true, a mic rising edge
+  (`on_speech_start`) fires `barge_event`, which
+  `play_tts_streaming(cancel=…)` consumes to flush the `AudioPlayer`
+  immediately. Mid-sentence TTS stops the moment the user starts talking.
+- `full_duplex` (mic level) — when true, the mic stays hot during TTS
+  playback. When false, `tts_active` gates the listener loop so the mic
+  is deaf while TTS is speaking (open-speaker safety; mic can't hear the
+  model's own output).
+- `wake_gate` (text level) — optional. After STT completes, the
+  transcribed line is passed through `WakeWordGate.filter()`. When
+  armed, only a line that starts with the trigger followed by
+  punctuation opens the window; subsequent utterances pass through
+  until `timeout_seconds` of silence re-arms. `None` when disabled.
 
-The four combinations are documented in `README.md` § "Dialogue duplex modes".
+The first two interact: full-duplex without barge-in lets the model
+record itself; half-duplex without barge-in is the "walkie-talkie" mode.
+The third (`wake_gate`) is a pure downstream filter — it runs after STT
+returns and only affects what's written to `listen_file`, so it composes
+cleanly with either duplex setting. The four duplex combinations are
+documented in `README.md` § "Dialogue duplex modes"; wake-word gating is
+documented in `README.md` § "Wake-word flags".
 
 ```mermaid
 sequenceDiagram
@@ -507,6 +541,49 @@ sequenceDiagram
 - Worst-case detect-to-speak latency is ~300ms (one poll interval). The
   polling interval doubles as a natural debounce — rapid successive writes
   that land within one tick are coalesced into a single read.
+
+### Wake-Word Gate
+
+`src/cli/wake_word.py` provides a stateful text-level filter that both
+`cai listen` and the `cai dialogue` listener thread mount between the STT
+call and the sink-file write:
+
+```python
+line = result.text.strip()
+if line and wake_gate is not None:
+    line = wake_gate.filter(line)  # may return None
+if line:
+    # append to sink + echo
+```
+
+Matching rule (case-insensitive, applied after `.strip()`):
+
+```python
+re.compile(rf"^\s*({re.escape(word)})(?:[.,!?;:]+|$)\s*(.*)$",
+           re.IGNORECASE | re.DOTALL)
+```
+
+The trigger must appear at the start of an utterance **followed by
+punctuation or end-of-utterance** — this leverages Whisper's
+pause-punctuation behavior to distinguish `"Computer, hello"` (matches,
+rest = `"hello"`) from `"Computer science is cool"` (no match). After a
+match the gate disarms for `timeout_seconds`; every utterance that passes
+during the open window updates `_last_pass_at`, so the window slides
+forward on continued conversation and only re-arms on true silence.
+
+On the armed→disarmed transition the gate emits `[wake] 'word' heard —
+listening` to stderr and (when `alert_sound=True`) plays a short
+two-tone sine burst via `sd.play(..., blocking=False)` — no shipped
+audio asset. Chime failures are swallowed so a missing output device
+never breaks the filter.
+
+`build_wake_gate()` merges `WakeWordSettings` with CLI overrides and
+returns `None` when gating is disabled, matching the existing
+`barge_event is None` / `tts_active is None` convention. The class
+accepts injected `clock`, `chime`, and `echo` callables so tests can
+drive the timeout logic without a real clock or audio device.
+
+Reuses the already-loaded Whisper model — no separate wake-word model.
 
 ### Concurrency Model
 

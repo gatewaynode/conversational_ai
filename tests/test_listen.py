@@ -67,3 +67,52 @@ class TestListenCommand:
 
         # Nothing written because stripped text was empty.
         assert not out.exists() or out.read_text() == ""
+
+    def test_wake_word_gates_non_trigger_utterance(self, tmp_path: Path) -> None:
+        """With --wake-word, non-matching utterances are dropped; matching open the gate."""
+        out = tmp_path / "heard.txt"
+        texts = iter(["Computer science is cool", "Computer, hello", "world"])
+        ctx = make_ctx()
+        ctx.mm.generate_stt.side_effect = lambda p: _FakeText(next(texts))
+
+        call_count = {"n": 0}
+
+        def fake_record() -> Path:
+            call_count["n"] += 1
+            if call_count["n"] <= 3:
+                return self._fake_wav()
+            raise KeyboardInterrupt
+
+        MockFactory = MagicMock()
+        MockFactory.return_value.record.side_effect = fake_record
+        ctx.recorder_factory = MockFactory
+        runner = CliRunner()
+
+        result = runner.invoke(
+            listen,
+            [str(out), "--wake-word", "computer", "--no-wake-alert"],
+            obj=ctx,
+        )
+
+        assert result.exit_code == 0, result.output
+        # Line 1 rejected (no punctuation after "Computer").
+        # Line 2 matches → rest "hello" emitted.
+        # Line 3 passes through open window as-is.
+        assert out.read_text() == "hello\nworld\n"
+
+    def test_wake_word_and_no_wake_word_mutually_exclusive(self, tmp_path: Path) -> None:
+        out = tmp_path / "heard.txt"
+        ctx = make_ctx()
+        runner = CliRunner()
+        result = runner.invoke(
+            listen,
+            [str(out), "--wake-word", "computer", "--no-wake-word"],
+            obj=ctx,
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+
+class _FakeText:
+    def __init__(self, text: str) -> None:
+        self.text = text

@@ -210,3 +210,59 @@ def test_mic_rejects_negative_threshold() -> None:
 def test_mic_rejects_multiplier_below_one() -> None:
     with pytest.raises(Exception):
         Settings(mic={"calibration_multiplier": 0.5})
+
+
+# ---------------------------------------------------------------------------
+# [wake_word] section — Feature 2 trigger-word gate
+# ---------------------------------------------------------------------------
+
+
+def test_wake_word_defaults() -> None:
+    s = build_settings(toml_path=None)
+    assert s.wake_word.enabled is False
+    assert s.wake_word.word == "computer"
+    assert s.wake_word.include_trigger is False
+    assert s.wake_word.timeout_seconds == 30.0
+    assert s.wake_word.alert_sound is True
+
+
+def test_wake_word_toml_overrides(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[wake_word]\n"
+        "enabled = true\n"
+        'word = "jarvis"\n'
+        "include_trigger = true\n"
+        "timeout_seconds = 60.0\n"
+        "alert_sound = false\n",
+        encoding="utf-8",
+    )
+    s = build_settings(toml_path=cfg)
+    assert s.wake_word.enabled is True
+    assert s.wake_word.word == "jarvis"
+    assert s.wake_word.include_trigger is True
+    assert s.wake_word.timeout_seconds == 60.0
+    assert s.wake_word.alert_sound is False
+
+
+def test_wake_word_cli_overrides_toml(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        "[wake_word]\nenabled = false\ntimeout_seconds = 60.0\n",
+        encoding="utf-8",
+    )
+    overrides = {"wake_word": {"enabled": True, "word": "friday"}}
+    s = build_settings(toml_path=cfg, cli_overrides=overrides)
+    assert s.wake_word.enabled is True
+    assert s.wake_word.word == "friday"
+    assert s.wake_word.timeout_seconds == 60.0  # TOML preserved
+
+
+def test_wake_word_rejects_non_positive_timeout() -> None:
+    with pytest.raises(Exception):
+        Settings(wake_word={"timeout_seconds": 0.0})
+
+
+def test_wake_word_rejects_timeout_above_ten_minutes() -> None:
+    with pytest.raises(Exception):
+        Settings(wake_word={"timeout_seconds": 601.0})

@@ -218,6 +218,48 @@ class TestListenerLoop:
         assert listen_path.read_text() == "ok\n"
         wav_path.unlink(missing_ok=True)
 
+    def test_wake_gate_drops_untriggered_utterance(self, tmp_path: Path) -> None:
+        """wake_gate=WakeWordGate filters STT output before append."""
+        from src.cli.wake_word import WakeWordGate
+
+        listen_path = tmp_path / "heard.txt"
+        listen_path.touch()
+        ctx = make_ctx()
+        shutdown = threading.Event()
+
+        texts = iter(["random chatter", "Computer, hello world"])
+
+        def fake_stt(audio_path: Any) -> Any:
+            t = next(texts, None)
+            if t is None:
+                shutdown.set()
+                return FakeSTTOutput(text="")
+            return FakeSTTOutput(text=t)
+
+        ctx.mm.generate_stt.side_effect = fake_stt
+
+        recorder_mock = MagicMock()
+        recorder_mock.record.side_effect = lambda *a, **kw: self._fake_wav()
+
+        gate = WakeWordGate(
+            "computer",
+            alert_sound=False,
+            chime=lambda: None,
+            echo=lambda _msg: None,
+        )
+
+        with patch("src.cli.dialogue.MicRecorder", return_value=recorder_mock):
+            _listener_loop(
+                listen_path,
+                ctx,
+                threading.Lock(),
+                shutdown,
+                wake_gate=gate,
+            )
+
+        # First utterance dropped (not a trigger), second matches → "hello world".
+        assert listen_path.read_text() == "hello world\n"
+
 
 class TestDuplexModes:
     """P13 duplex-mode matrix: `barge_in` × `full_duplex`."""

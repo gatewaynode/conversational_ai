@@ -33,7 +33,7 @@ sessions and make onboarding harder.
       Either implement them or remove from the PRD with a note.
 - [x] Add mic noise-floor controls (Feature 1) to the Audio I/O and
       Shared Configuration sections.
-- [ ] Add wake word (Feature 2) as a new subsection once implemented.
+- [x] Add wake word (Feature 2) as a new subsection once implemented.
 
 ### Review — Task 0
 
@@ -90,6 +90,13 @@ README + CONTRIBUTING to reflect the current count.
 **Deferred (Feature 2 scope):**
 - 0.2 "Add wake word (Feature 2) as a new subsection once implemented" —
   intentionally left unchecked. Will land with Feature 2.
+
+### Addendum (2026-04-18) — 0.2 final closure
+
+Last remaining 0.2 checkbox flipped as part of Feature 2 shipping. PRD now
+has a dedicated **Wake word** subsection under Duplex modes, plus wake-word
+options listed on `cai listen` and `cai dialogue` and a `[wake_word]` block
+in Shared Configuration. Task 0 fully closed.
 
 ---
 
@@ -221,57 +228,162 @@ Whisper model on short utterances — plenty of headroom on M3 Ultra / 512 GB.
 
 ### 2.1 Design
 
-- [ ] New module `src/cli/wake_word.py` with a `WakeWordDetector` class.
-- [ ] API shape:
+- [x] New module `src/cli/wake_word.py` with a `WakeWordGate` class.
+      (API renamed from `WakeWordDetector` — gate-at-sink pattern rather
+      than loop-owning detector. See Review below.)
+- [x] API shape — final form:
       ```python
-      class WakeWordDetector:
-          def __init__(self, mm, word: str, *, include_trigger: bool = False): ...
-          def wait_for_trigger(self, recorder: MicRecorder, shutdown: Event) -> None:
-              """Loop: record utterance, transcribe, match trigger.
-              Returns when matched, or raises on shutdown."""
-          def strip_trigger(self, text: str) -> str: ...
+      class WakeWordGate:
+          def __init__(
+              self, word: str, *,
+              include_trigger: bool = False,
+              timeout_seconds: float = 30.0,
+              alert_sound: bool = True,
+              clock: Callable[[], float] = time.monotonic,
+              chime: Callable[[], None] | None = None,
+              echo: Callable[[str], None] | None = None,
+          ) -> None: ...
+          def filter(self, text: str) -> str | None: ...
       ```
-- [ ] Matching is case-insensitive, punctuation-stripped, whole-word (regex
-      `\btrigger\b`) — avoids "computer science" misfires vs "computer, list…".
-- [ ] `include_trigger=False` (default) causes `strip_trigger` to remove the
-      trigger and any leading comma/filler from the transcript before write-out.
+- [x] Matching is case-insensitive, anchored-to-start, trigger followed by
+      punctuation or end-of-string (regex
+      `^\s*(TRIGGER)(?:[.,!?;:]+|$)\s*(.*)$`). Rejects "computer science";
+      accepts "Computer, hello" → "hello"; accepts "Computer?!" with empty rest.
+      (Stricter than the original `\btrigger\b` plan — relies on Whisper's
+      pause-punctuation behavior as the distinguishing signal.)
+- [x] `include_trigger=False` (default) emits only the post-trigger tail;
+      `include_trigger=True` emits the full transcript.
 
 ### 2.2 Config plumbing
 
-- [ ] Add `[wake_word]` section to `src/config.py`:
+- [x] Add `[wake_word]` section to `src/config.py`:
       `enabled: bool = False`, `word: str = "computer"`,
-      `include_trigger: bool = False`, `timeout_seconds: float = 30.0`.
-- [ ] `timeout_seconds` = re-arm window. After a successful trigger, the next
-      utterance goes through unconditionally; if no utterance arrives within
-      `timeout_seconds`, detector re-engages.
-- [ ] Update `config.toml` with commented defaults.
-- [ ] `tests/test_config.py`: coverage for `[wake_word]`.
+      `include_trigger: bool = False`, `timeout_seconds: float = 30.0`,
+      `alert_sound: bool = True`.
+- [x] `timeout_seconds` = sliding open-window timeout. Every passing
+      utterance extends the window via `_last_pass_at`; if no utterance
+      arrives within `timeout_seconds` of the last pass, the gate re-arms.
+- [x] Default TOML template (`_DEFAULT_TOML` in `src/config.py`) updated
+      with `[wake_word]` block.
+- [x] `tests/test_config.py`: coverage for `[wake_word]` (+5 tests:
+      defaults, TOML overrides, CLI merge, non-positive timeout rejected,
+      timeout > 600 rejected).
 
 ### 2.3 Integration
 
-- [ ] `listen` subcommand: if wake word enabled, wrap the record loop so each
-      utterance first passes through `WakeWordDetector` state machine.
-- [ ] `dialogue` subcommand: same wrapping on the listener thread. Must
-      compose with `barge_in` / `full_duplex` duplex modes without deadlock —
-      wake-word detection acquires the inference lock exactly like a normal
-      STT call.
-- [ ] CLI flags: `--wake-word WORD`, `--no-wake-word`, `--wake-timeout SECONDS`,
-      `--include-trigger/--strip-trigger`.
-- [ ] `transcribe` is intentionally skipped — one-shot, user already
+- [x] `listen` subcommand: wake-gate filter applied between
+      `result.text.strip()` and the file append — no separate loop wrapping.
+- [x] `dialogue` subcommand: same gate-at-sink placement inside
+      `_listener_loop`. Composes cleanly with `barge_in` (VAD) and
+      `full_duplex` (mic gating) as a third, independent layer — no new
+      locks, no deadlock surface.
+- [x] CLI flags on both commands: `--wake-word WORD` (forces enabled=true),
+      `--no-wake-word`, `--wake-timeout SECONDS`,
+      `--include-trigger/--strip-trigger`, `--wake-alert/--no-wake-alert`.
+      `--wake-word` and `--no-wake-word` are mutually exclusive (UsageError).
+- [x] `transcribe` intentionally skipped — one-shot, user already
       initiated it by running the command.
 
 ### 2.4 Tests
 
-- [ ] `tests/test_wake_word.py`: unit tests for matching (case, punctuation,
-      whole-word), `strip_trigger` output, timeout re-arm behavior.
-- [ ] Mocked CliRunner tests for `listen --wake-word` and `dialogue --wake-word`.
-- [ ] Live check: `cai listen out.txt --wake-word computer` — talking random
+- [x] `tests/test_wake_word.py`: 19 unit tests across 6 classes
+      (TriggerMatching, IncludeTrigger, OpenWindow, TimeoutRearm,
+      AlertFeedback, Validation) — case/punctuation, strip vs include,
+      sliding timeout via injected scripted clock, chime failure
+      tolerance.
+- [x] CliRunner tests: `tests/test_listen.py` (+2: flow coverage and
+      mutual-exclusion); `tests/test_dialogue.py` (+1: listener-loop
+      integration with a real gate and STT iterator).
+- [x] Live check: `cai listen out.txt --wake-word computer` — talking random
       noise does nothing; saying "computer, hello world" appends "hello world".
+      Verified 2026-04-18: wake fired on "computer", four follow-up
+      utterances passed through cleanly within the sliding window, stderr
+      echo + trigger-strip both behaved as designed.
 
 ### 2.5 Docs
 
-- [ ] Update `README.md` CLI section with wake-word usage + config example.
-- [ ] Update `PRD.md` with the wake-word feature in a new subsection.
+- [x] Update `README.md` CLI section with wake-word usage + config example.
+- [x] Update `PRD.md` with the wake-word feature in a new subsection.
+- [x] Update `tasks/ARCHITECTURE.md` with `wake_word.py` in the file tree,
+      `[wake_word]` config block, CLI Overrides entries, reworked Dialogue
+      Mode Threading prose, and a dedicated Wake-Word Gate section.
+
+### Review — Feature 2
+
+**Status:** Code + tests + docs complete. 220/220 tests passing (193 → 220,
++27 new). Awaiting user-driven hardware validation of the live flow.
+
+**What shipped:**
+- `src/cli/wake_word.py` (new, 166 lines) — `WakeWordGate` class with
+  `filter(text) -> str | None` that returns `None` to drop, or the
+  emitted string to pass through. `build_wake_gate()` helper merges
+  `WakeWordSettings` with CLI overrides and returns `None` when disabled
+  (matching the existing `barge_event is None` convention).
+- `src/config.py` — `WakeWordSettings` Pydantic submodel with
+  `timeout_seconds` bounded `(0.0, 600.0]`. `[wake_word]` added to
+  `_DEFAULT_TOML`.
+- `src/cli/listen.py` (95 → 129 lines) — five new CLI flags, mutual-
+  exclusion check, `build_wake_gate()` call, gate-at-sink filter between
+  STT and file append.
+- `src/cli/dialogue.py` (292 → 357 lines) — same five flags, same
+  mutual-exclusion check, `build_wake_gate()` call, `wake_gate`
+  threaded through to `_listener_loop` as a positional arg. Filter
+  applied in the listener before file append.
+
+**Design decisions worth remembering:**
+- **Gate-at-sink over loop-owning detector.** The original 2.1 plan
+  wrapped each utterance in a separate detector loop. Shipped form is a
+  simple filter between `result.text.strip()` and the append — ~10 lines
+  of call-site change, zero new threads or locks.
+- **Strict punctuation match.** `^\s*(WORD)(?:[.,!?;:]+|$)\s*(.*)$`
+  leans on Whisper's pause-punctuation behavior. "Computer science"
+  misfires avoided; "Computer, hello" → "hello"; "Computer?!" accepted
+  with empty rest.
+- **Sliding timeout.** Every pass extends the window via
+  `_last_pass_at`. On re-arm, the triggering utterance falls through
+  back into the filter so the trigger word itself re-gates naturally.
+- **Three-layer composition.** Wake gate (text) stacks above
+  `barge_event` (VAD) and `tts_active` (mic). No interaction, no
+  deadlock.
+- **Two-tier feedback.** stderr echo on every activation; optional
+  two-tone chime (880 → 1320 Hz, ~160 ms via `sd.play(blocking=False)`),
+  wrapped in broad try/except so missing audio devices can't break the
+  filter.
+
+**dialogue.py crossed the Task 5.6 soft 350-line threshold (now 357).**
+Primary cause: five `@click.option` decorators + `build_wake_gate()` call
++ mutual-exclusion check (~65 lines added). Tried collapsing the Thread
+args from kwargs dict to positional tuple — saved ~8 lines but still 7
+over. Candidate extraction (`_build_dialogue_runtime` helper) would drop
+~30 lines but adds indirection that doesn't pay for itself yet.
+Accepting the overshoot; Task 5.6 stays open as a monitor.
+
+**Test split (+27 total):**
+- `tests/test_wake_word.py` — 19 unit tests (new file).
+- `tests/test_listen.py` — +2 tests (flow + mutual exclusion).
+- `tests/test_dialogue.py` — +1 test (`_listener_loop` with real gate).
+- `tests/test_config.py` — +5 tests (settings defaults, overrides,
+  validators).
+
+**Docs synced:**
+- README.md — `[wake_word]` block added to config snippet, test count
+  189 → 220, new "Wake-word flags (listen / dialogue)" subsection,
+  `wake_word.py` added to the project-layout tree.
+- PRD.md — wake-word options added to `cai listen` and `cai dialogue`
+  Options lists; new **Wake word** subsection after Duplex modes
+  (matching rule, activation feedback, config/CLI overrides — closes
+  TODO 0.2); `[wake_word]` in Shared Configuration; Feature 2 removed
+  from Future work.
+- tasks/ARCHITECTURE.md — `wake_word.py` in file tree, `[wake_word]` in
+  TOML example, CLI Overrides entries (noting mutex), reworked Dialogue
+  Mode Threading prose describing the three-layer gate stack, new
+  dedicated "Wake-Word Gate" section with regex + integration snippet.
+
+**Deferred / rough edges:**
+- Live hardware check (2.4 last item) — user-driven, requires mic.
+- `dialogue.py` at 357 lines — flagged under Task 5.6.
+- Pre-existing B5.1 F401 in `tests/test_config.py` still present (not in
+  scope for this feature).
 
 ---
 

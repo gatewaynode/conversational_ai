@@ -16,6 +16,8 @@ from typing import Callable
 
 import click
 
+from src.config import WakeWordSettings
+
 
 def _play_chime(sample_rate: int = 24_000) -> None:
     """Two-tone sine burst (880 Hz → 1320 Hz) with edge fade, ~160 ms total.
@@ -116,3 +118,49 @@ class WakeWordGate:
                 self._chime()
             except Exception:
                 pass
+
+
+def build_wake_gate(
+    base: WakeWordSettings,
+    *,
+    word_override: str | None = None,
+    disable: bool = False,
+    timeout_override: float | None = None,
+    include_trigger_override: bool | None = None,
+    alert_sound_override: bool | None = None,
+) -> WakeWordGate | None:
+    """Merge CLI overrides into `WakeWordSettings` and build a gate (or None).
+
+    Returns None when the merged settings disable wake-word gating. CLI flags
+    win over config:
+
+    - ``--wake-word WORD`` forces ``enabled=True`` and sets the word.
+    - ``--no-wake-word`` forces ``enabled=False`` regardless of config.
+    - Remaining overrides only take effect when enabled.
+    """
+    if disable:
+        return None
+
+    enabled = base.enabled
+    word = base.word
+    if word_override is not None:
+        word = word_override
+        enabled = True
+
+    if not enabled:
+        return None
+
+    return WakeWordGate(
+        word,
+        include_trigger=(
+            include_trigger_override
+            if include_trigger_override is not None
+            else base.include_trigger
+        ),
+        timeout_seconds=(
+            timeout_override if timeout_override is not None else base.timeout_seconds
+        ),
+        alert_sound=(
+            alert_sound_override if alert_sound_override is not None else base.alert_sound
+        ),
+    )

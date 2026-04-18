@@ -83,6 +83,13 @@ calibrate_noise        = false  # sample room tone at startup (opt-in)
 calibration_seconds    = 1.0
 calibration_multiplier = 3.0
 
+[wake_word]
+enabled         = false       # gate STT output on a trigger word (listen/dialogue)
+word            = "computer"  # trigger; must be followed by punctuation or EOL
+include_trigger = false       # keep the trigger word in the emitted line
+timeout_seconds = 30.0        # re-arm after this much silence
+alert_sound     = true        # play a short chime on activation
+
 [limits]
 max_text_length     = 5000      # characters
 max_audio_file_size = 26214400  # bytes (25 MB)
@@ -180,7 +187,7 @@ The server allows requests from `http://localhost:*` and `http://127.0.0.1:*` on
 ## Development
 
 ```bash
-# Run tests (189 as of 2026-04-17)
+# Run tests (220 as of 2026-04-18)
 uv run pytest
 
 # Lint / format
@@ -319,6 +326,37 @@ Example:
 cai listen --mic-threshold 0.03 --mic-min-speech 0.25 --calibrate-noise out.txt
 ```
 
+### Wake-word flags (listen / dialogue)
+
+By default every transcribed utterance flows through to the sink file. Pass
+`--wake-word WORD` to require a trigger (followed by punctuation or
+end-of-utterance) before anything is written. Silence past
+`--wake-timeout` seconds re-arms the gate.
+
+```
+--wake-word WORD                        Enable gating; forces [wake_word].enabled=true
+--no-wake-word                          Disable gating regardless of config
+--wake-timeout SECONDS                  Override [wake_word].timeout_seconds
+--include-trigger / --strip-trigger     Keep or strip the trigger word
+--wake-alert / --no-wake-alert          Play or suppress the activation chime
+```
+
+The trigger must be distinct from normal sentence use — Whisper adds
+punctuation on pauses, so `"Computer, hello"` opens the gate and emits
+`"hello"`, while `"Computer science is cool"` is rejected. On trigger, a
+`[wake] 'computer' heard — listening` line goes to stderr; if
+`--wake-alert` is set (default), a short two-tone chime also plays.
+
+Example — wake-word dictation to a file:
+
+```bash
+cai listen --wake-word computer out.txt
+# "Computer, take a note" → "take a note\n"
+# "continue writing"      → "continue writing\n"   (window still open)
+# …30 s of silence…
+# "computer science rocks" → rejected, gate re-armed
+```
+
 ## Project layout
 
 ```
@@ -344,8 +382,9 @@ conversational_ai/
 │       ├── transcribe.py# `cai transcribe`
 │       ├── watch.py     # `cai watch`
 │       ├── listen.py    # `cai listen`
-│       └── dialogue.py  # `cai dialogue`
-└── tests/               # pytest test suite (189 tests)
+│       ├── dialogue.py  # `cai dialogue`
+│       └── wake_word.py # WakeWordGate + build_wake_gate helper
+└── tests/               # pytest test suite (220 tests)
 ```
 
 ## License

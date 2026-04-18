@@ -11,6 +11,7 @@ import click
 
 from src.cli import CliContext
 from src.cli.audio_io import AudioDeviceError, MicRecorder
+from src.cli.wake_word import WakeWordGate, build_wake_gate
 from src.cli.watch import TextFileHandler
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ def _listener_loop(
     barge_event: threading.Event | None = None,
     tts_active: threading.Event | None = None,
     recorder: MicRecorder | None = None,
+    wake_gate: WakeWordGate | None = None,
 ) -> None:
     """Record mic utterances, transcribe, and append to listen_path.
 
@@ -100,6 +102,10 @@ def _listener_loop(
     waits instead of recording. This prevents the speaker's own output
     from being re-transcribed on open-speaker setups. `None` when
     full-duplex is enabled.
+
+    `wake_gate` (wake-word mode) filters transcribed text before it
+    reaches the sink file. `None` disables wake-word gating (every
+    non-empty utterance passes through).
     """
     if recorder is None:
         recorder = MicRecorder()
@@ -160,6 +166,8 @@ def _listener_loop(
             audio_path.unlink(missing_ok=True)
 
         line = result.text.strip()
+        if line and wake_gate is not None:
+            line = wake_gate.filter(line)
         if line:
             with listen_path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -203,6 +211,38 @@ def _listener_loop(
     default=None,
     help="Sample room tone at startup to set the effective threshold.",
 )
+@click.option(
+    "--wake-word",
+    "wake_word",
+    type=str,
+    default=None,
+    help="Enable wake-word gating with the given trigger (forces enabled=true).",
+)
+@click.option(
+    "--no-wake-word",
+    "no_wake_word",
+    is_flag=True,
+    default=False,
+    help="Disable wake-word gating regardless of config.",
+)
+@click.option(
+    "--wake-timeout",
+    type=float,
+    default=None,
+    help="Override wake-word open-window timeout in seconds.",
+)
+@click.option(
+    "--include-trigger/--strip-trigger",
+    "include_trigger",
+    default=None,
+    help="Keep or strip the trigger word from the emitted line.",
+)
+@click.option(
+    "--wake-alert/--no-wake-alert",
+    "wake_alert",
+    default=None,
+    help="Play or suppress the activation chime (stderr echo always fires).",
+)
 @click.pass_obj
 def dialogue(
     ctx_obj: CliContext,
@@ -212,6 +252,11 @@ def dialogue(
     mic_silence: float | None,
     mic_min_speech: float | None,
     calibrate_noise: bool | None,
+    wake_word: str | None,
+    no_wake_word: bool,
+    wake_timeout: float | None,
+    include_trigger: bool | None,
+    wake_alert: bool | None,
 ) -> None:
     """Run TTS (file watcher) and STT (mic listener) simultaneously.
 
@@ -220,6 +265,9 @@ def dialogue(
 
     File paths default to the [dialogue] section in the config file.
     """
+    if wake_word is not None and no_wake_word:
+        raise click.UsageError("--wake-word and --no-wake-word are mutually exclusive.")
+
     d = ctx_obj.settings.dialogue
     speak_path = Path(speak_file or d.speak_file).expanduser()
     listen_path = Path(listen_file or d.listen_file).expanduser()
@@ -258,6 +306,15 @@ def dialogue(
     except AudioDeviceError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    wake_gate = build_wake_gate(
+        ctx_obj.settings.wake_word,
+        word_override=wake_word,
+        disable=no_wake_word,
+        timeout_override=wake_timeout,
+        include_trigger_override=include_trigger,
+        alert_sound_override=wake_alert,
+    )
+
     # --- Watcher (file → TTS) ---
     handler = TextFileHandler(
         speak_path,
@@ -267,7 +324,16 @@ def dialogue(
     # --- Listener (mic → STT → file) ---
     listener_thread = threading.Thread(
         target=_listener_loop,
-        args=(listen_path, ctx_obj, inference_lock, shutdown, barge_event, tts_active, recorder),
+        args=(
+            listen_path,
+            ctx_obj,
+            inference_lock,
+            shutdown,
+            barge_event,
+            tts_active,
+            recorder,
+            wake_gate,
+        ),
         daemon=True,
         name="dialogue-listener",
     )
