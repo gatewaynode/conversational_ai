@@ -509,14 +509,70 @@ this task (`dataclasses.field` import and an unused
 `test_record_failure_resets_backoff_after_success`). Noted for the 5.4
 pass when this file is being split anyway.
 
-### 5.4 Split `tests/test_cli_subcommands.py` (834 lines)
+### 5.4 Split `tests/test_cli_subcommands.py` (850 lines)
 
-- [ ] Extract per-subcommand test modules: `tests/test_speak.py`,
+- [x] Extract per-subcommand test modules: `tests/test_speak.py`,
       `tests/test_transcribe.py`, `tests/test_listen.py`,
-      `tests/test_dialogue.py`, `tests/test_serve.py`.
-- [ ] Move shared fixtures (mock ModelManager, CliRunner helpers) into
-      `tests/conftest.py`.
-- [ ] Verify 189/189 still pass after the split.
+      `tests/test_dialogue.py`, `tests/test_serve.py`,
+      plus `tests/test_watch.py` (added for parity — watch tests needed
+      a home and a stub `test_cli_subcommands.py` would've defeated the
+      goal of splitting by concern).
+- [x] Move shared fixtures to `tests/_cli_fakes.py` (plain module, not
+      `conftest.py` — matches the Task 5.1 `_audio_fakes.py` precedent,
+      avoids pytest's double-import trap, and keeps `make_ctx` as a plain
+      function so call sites migrate with zero rewrites beyond imports).
+- [x] Fold `TestLazyModelLoading` (group-level, not per-subcommand) into
+      `tests/test_cli_context.py` — both concern the CLI group layer in
+      `src/cli/__init__.py`.
+- [x] Verify 193/193 still pass after the split.
+
+#### Review (2026-04-18)
+
+Split shipped as seven files plus a shared-fakes module:
+
+| File | Lines | Contents |
+|---|---|---|
+| `tests/_cli_fakes.py` (new) | 35 | `FakeSTTOutput`, `make_ctx()` |
+| `tests/test_speak.py` (new) | 94 | `TestSpeak` (7 tests) |
+| `tests/test_transcribe.py` (new) | 81 | `TestTranscribe` (4 tests) |
+| `tests/test_watch.py` (new) | 73 | `TestTextFileHandler`, `TestWatchCommand` (5 tests) |
+| `tests/test_listen.py` (new) | 65 | `TestListenCommand` (2 tests) |
+| `tests/test_serve.py` (new) | 27 | `TestServeCommand` (1 test) |
+| `tests/test_dialogue.py` (new) | 359 | `TestSpeakCallback`, `TestListenerLoop`, `TestDuplexModes`, `TestDialogueCommand` (15 tests) |
+| `tests/test_cli_context.py` (extended) | 100 (was 44) | Factory defaults/overrides + `TestLazyModelLoading` (12 tests) |
+| `tests/test_cli_subcommands.py` | — | **deleted** (was 850) |
+
+All seven new files are well under the 500-line guideline. The largest
+(`test_dialogue.py`, 359 lines) is cohesive: every class tests some slice
+of the dialogue listener/callback state machine — splitting further would
+fragment rather than clarify.
+
+**B4 resolved as part of the split:**
+- B4.1 (`dataclasses.field` dead import) — the `FakeSTTOutput` dataclass
+  moved to `_cli_fakes.py`, which imports only `dataclass`. Gone.
+- B4.2 (dead `import src.cli.dialogue as dialogue_mod` in
+  `test_record_failure_resets_backoff_after_success`) — deleted during
+  the move to `test_dialogue.py`. The sibling test
+  `test_record_failures_trigger_backoff_and_give_up` still imports the
+  module (and uses it), unchanged.
+
+**New F401s surfaced — pre-existing, logged as B5:**
+Repo-wide `ruff check` during 5.4 verification turned up 5 unrelated F401s
+in `test_config.py`, `test_middleware.py`, and `test_routes.py`. Confirmed
+they exist at HEAD (commit 7247592) — none introduced by 5.4. Captured as
+a new `BUGS.md` entry (B5) rather than fixed here; all five are one-line
+deletions and the scope of 5.4 was the subcommand-tests split, not a
+repo-wide lint sweep.
+
+**Intentional: `_listener_loop` fallback + its tests preserved.**
+The six `TestListenerLoop` / `TestDuplexModes` tests still patch
+`src.cli.dialogue.MicRecorder` because `_listener_loop(..., recorder=None)`
+still constructs one directly. The cleaner move (pass `recorder=recorder_mock`
+from the tests and drop the fallback) was considered for 5.4 but rejected —
+it's a behavior change on production code, not a test reorganization, and
+doesn't belong bundled with the file split. Flagging for later if the
+fallback earns its keep as a real feature (e.g., when wake-word integration
+in Feature 2 looks at the listener loop).
 
 ### 5.5 Document the factory testing pattern
 
