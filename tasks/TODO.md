@@ -576,8 +576,36 @@ in Feature 2 looks at the listener loop).
 
 ### 5.5 Document the factory testing pattern
 
-- [ ] Add a "Testing patterns" section to `CONTRIBUTING.md` explaining
+- [x] Add a "Testing patterns" section to `CONTRIBUTING.md` explaining
       the factory approach and why direct-import patching is discouraged.
+
+#### Review (2026-04-18)
+
+Added a new **Testing patterns** section to `CONTRIBUTING.md` (between
+Testing and Conventions) covering three things:
+
+1. **Factory seam on `CliContext`** — code snippet of the dataclass
+   definition, followed by the `ctx.speaker_factory = MagicMock()` +
+   `CliRunner(obj=ctx)` usage pattern that landed in 5.3. References
+   `tests/_cli_fakes.make_ctx()` as the canonical starting point.
+2. **Why direct-import patching is discouraged** — names the two
+   legitimate remaining exceptions (`_listener_loop` recorder=None
+   fallback; `ModelManager` lazy loading in the group callback) so
+   future edits know what's a real branch under test vs. what's
+   test-convenience plumbing that should migrate to a factory field.
+3. **Shared helpers in `tests/_<topic>.py`** — documents the
+   plain-module convention (vs. `conftest.py`) with the current
+   two-row helper-file table and the double-import-trap rationale.
+   Matches `feedback_shared_test_helpers.md` in memory.
+
+**Collateral fix:** the Test structure table had gone stale —
+`test_cli_subcommands.py` was listed but was deleted in 5.4, and the 5.1
+spinoffs (`test_mic_calibration.py`, `test_mic_factory.py`) plus the 5.2
+`test_cli_context.py` were missing. Replaced the one stale row with five
+accurate rows covering the current tests/ directory.
+
+Doc-only change; no test edits. 193/193 still passing per 5.4's
+verification (no source touched).
 
 ### 5.6 Monitor `src/cli/dialogue.py` (298 lines)
 

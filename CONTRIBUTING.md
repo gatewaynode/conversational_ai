@@ -112,14 +112,105 @@ uv run pytest tests/test_routes.py  # single file
 | `test_middleware.py` | `X-Limit-*` headers appear on 2xx and error responses |
 | `test_routes.py` | All route handlers via `TestClient` with a `FakeModelManager` |
 | `test_integration.py` | Full app stack (real middlewares + real routes) with fake inference |
-| `test_cli_audio_io.py` | `MicRecorder` VAD, min-speech gate, calibration, EMA, pre-latch ring, factory helper |
-| `test_cli_subcommands.py` | Click subcommands via `CliRunner` (patched model manager + recorder factory) |
+| `test_cli_audio_io.py` | `MicRecorder` VAD, min-speech gate, pre-latch ring, EMA, `TextFileHandler`, `play_tts_streaming` barge-in |
+| `test_mic_calibration.py` | `MicRecorder.calibrate()` + effective-threshold math |
+| `test_mic_factory.py` | `mic_recorder_from_settings()` settings → recorder wiring |
+| `test_cli_context.py` | `CliContext` factory defaults + lazy model loading via the Click group callback |
+| `test_speak.py`, `test_transcribe.py`, `test_watch.py`, `test_listen.py`, `test_dialogue.py`, `test_serve.py` | Per-subcommand tests via `CliRunner` using the factory seam (see Testing patterns below) |
 
 ### Adding a new test
 
 - Put it in the relevant `test_*.py` file
 - Use `FakeModelManager` / `FakeGenerationResult` from `test_routes.py` or `test_integration.py` to avoid loading real models
 - Async tests get `asyncio_mode = "auto"` from `pyproject.toml` — no decorator needed
+
+---
+
+## Testing patterns
+
+Two conventions are load-bearing for CLI subcommand tests. Follow them when
+adding tests that need to swap out audio hardware or share test doubles
+across files.
+
+### Factory seam on `CliContext`
+
+CLI subcommands construct microphones and speakers via factory callables on
+`CliContext`, not via direct imports of the helper functions:
+
+```python
+# src/cli/__init__.py
+@dataclass
+class CliContext:
+    settings: Settings
+    mm: ModelManager | None
+    recorder_factory: Callable[..., MicRecorder] = field(
+        default=mic_recorder_from_settings
+    )
+    speaker_factory: Callable[..., None] = field(default=play_tts_streaming)
+```
+
+Subcommand bodies call `ctx_obj.recorder_factory(...)` /
+`ctx_obj.speaker_factory(...)`. Tests override one attribute on the context
+and invoke the command with `CliRunner(obj=ctx)`:
+
+```python
+from tests._cli_fakes import make_ctx
+
+ctx = make_ctx()
+ctx.speaker_factory = MagicMock()
+runner.invoke(speak.speak, ["hello"], obj=ctx)
+
+ctx.speaker_factory.assert_called_once()
+```
+
+`make_ctx()` (in `tests/_cli_fakes.py`) returns a `CliContext` wrapping a
+fake `ModelManager` with sensible TTS/STT defaults; override only what the
+test cares about.
+
+### Why direct-import patching is discouraged
+
+`patch("src.cli.transcribe.mic_recorder_from_settings", ...)` ties tests to
+an internal import path. When Feature 1 moved `MicRecorder` imports to a
+factory helper, 7 patch targets across the test file had to be migrated in
+lockstep. The factory seam collapses those to a single override on
+`ctx.obj`, and the test survives future rewires as long as the subcommand
+keeps calling `ctx_obj.<factory>(...)`.
+
+Two places still legitimately patch imports:
+
+- `TestListenerLoop` / `TestDuplexModes` in `tests/test_dialogue.py` patch
+  `src.cli.dialogue.MicRecorder` because `_listener_loop(recorder=None)`
+  falls back to constructing one directly — a real branch under test, not
+  test-convenience plumbing.
+- `TestLazyModelLoading` in `tests/test_cli_context.py` patches
+  `src.cli.ModelManager` to observe what the group callback loads. There is
+  no factory seam for model loading — models are a per-process singleton
+  and the Click group callback owns the decision.
+
+If you find yourself adding a third exception, first check whether a new
+factory field on `CliContext` would let you delete it.
+
+### Shared test helpers in plain modules
+
+Shared fakes and helper factories live in `tests/_<topic>.py` as plain
+Python modules — **not** in `tests/conftest.py`:
+
+| File | What it exports |
+|------|---------------|
+| `tests/_audio_fakes.py` | `FakeInputStream`, `PortAudioError` |
+| `tests/_cli_fakes.py` | `FakeSTTOutput`, `make_ctx()` |
+
+`conftest.py` is avoided because pytest's collector can import it twice
+(once via fixture collection, once via normal `import`), which breaks
+`isinstance` / dataclass identity checks and silently duplicates
+module-level state. A plain module imported by path — `from tests._cli_fakes
+import make_ctx` — is loaded exactly once per test file, like any other
+Python module.
+
+Keep helpers as plain functions (e.g. `make_ctx(...)`) rather than
+`@pytest.fixture`. Call sites migrate between test files with no rewrite
+beyond the import line, and the helper works identically when called from
+non-pytest contexts (ad-hoc debugging, REPL).
 
 ---
 
