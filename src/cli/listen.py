@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 
 from src.cli import CliContext
-from src.cli.audio_io import AudioDeviceError, mic_recorder_from_settings
+from src.cli.audio_io import AudioDeviceError
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def listen(
             if v is not None
         }
     )
-    recorder = mic_recorder_from_settings(mic, calibrate_override=calibrate_noise)
+    recorder = ctx_obj.recorder_factory(mic, calibrate_override=calibrate_noise)
     # Long-running mode: calibrate once up front, not per-utterance.
     try:
         if recorder.calibrate_noise:

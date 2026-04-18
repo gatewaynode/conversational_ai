@@ -63,10 +63,11 @@ def _make_ctx(
 class TestSpeak:
     def test_speak_positional_arg(self) -> None:
         ctx = _make_ctx()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         runner = CliRunner()
 
-        with patch("src.cli.speak.play_tts_streaming") as mock_play:
-            result = runner.invoke(speak, ["hello world"], obj=ctx)
+        result = runner.invoke(speak, ["hello world"], obj=ctx)
 
         assert result.exit_code == 0, result.output
         mock_play.assert_called_once()
@@ -75,10 +76,11 @@ class TestSpeak:
 
     def test_speak_strips_whitespace(self) -> None:
         ctx = _make_ctx()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         runner = CliRunner()
 
-        with patch("src.cli.speak.play_tts_streaming") as mock_play:
-            result = runner.invoke(speak, ["  trimmed  "], obj=ctx)
+        result = runner.invoke(speak, ["  trimmed  "], obj=ctx)
 
         assert result.exit_code == 0
         assert mock_play.call_args[0][1] == "trimmed"
@@ -87,30 +89,32 @@ class TestSpeak:
         f = tmp_path / "input.txt"
         f.write_text("text from file\n")
         ctx = _make_ctx()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         runner = CliRunner()
 
-        with patch("src.cli.speak.play_tts_streaming") as mock_play:
-            result = runner.invoke(speak, ["--file", str(f)], obj=ctx)
+        result = runner.invoke(speak, ["--file", str(f)], obj=ctx)
 
         assert result.exit_code == 0, result.output
         assert mock_play.call_args[0][1] == "text from file"
 
     def test_speak_from_stdin(self) -> None:
         ctx = _make_ctx()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         runner = CliRunner()
 
-        with patch("src.cli.speak.play_tts_streaming") as mock_play:
-            result = runner.invoke(speak, [], input="piped text\n", obj=ctx)
+        result = runner.invoke(speak, [], input="piped text\n", obj=ctx)
 
         assert result.exit_code == 0, result.output
         assert mock_play.call_args[0][1] == "piped text"
 
     def test_speak_empty_input_raises_usage_error(self) -> None:
         ctx = _make_ctx()
+        ctx.speaker_factory = MagicMock()
         runner = CliRunner()
 
-        with patch("src.cli.speak.play_tts_streaming"):
-            result = runner.invoke(speak, [], input="   \n", obj=ctx)
+        result = runner.invoke(speak, [], input="   \n", obj=ctx)
 
         assert result.exit_code != 0
 
@@ -120,10 +124,11 @@ class TestSpeak:
         ctx.settings.tts.voice = "af_sky"
         ctx.settings.tts.speed = 1.5
         ctx.settings.tts.lang_code = "b"
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         runner = CliRunner()
 
-        with patch("src.cli.speak.play_tts_streaming") as mock_play:
-            runner.invoke(speak, ["hi"], obj=ctx)
+        runner.invoke(speak, ["hi"], obj=ctx)
 
         _, text, voice, speed, lang_code = mock_play.call_args[0]
         assert voice == "af_sky"
@@ -152,11 +157,12 @@ class TestTranscribe:
 
     def test_transcribe_prints_to_stdout(self) -> None:
         ctx = _make_ctx(stt_text="transcribed text")
+        MockFactory = MagicMock()
+        MockFactory.return_value.record.return_value = self._fake_record()
+        ctx.recorder_factory = MockFactory
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
-            MockFactory.return_value.record.return_value = self._fake_record()
-            result = runner.invoke(transcribe, [], obj=ctx)
+        result = runner.invoke(transcribe, [], obj=ctx)
 
         assert result.exit_code == 0, result.output
         assert "transcribed text" in result.output
@@ -164,11 +170,12 @@ class TestTranscribe:
     def test_transcribe_to_file(self, tmp_path: Path) -> None:
         out = tmp_path / "out.txt"
         ctx = _make_ctx(stt_text="saved to file")
+        MockFactory = MagicMock()
+        MockFactory.return_value.record.return_value = self._fake_record()
+        ctx.recorder_factory = MockFactory
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
-            MockFactory.return_value.record.return_value = self._fake_record()
-            result = runner.invoke(transcribe, ["-o", str(out)], obj=ctx)
+        result = runner.invoke(transcribe, ["-o", str(out)], obj=ctx)
 
         assert result.exit_code == 0, result.output
         assert out.read_text() == "saved to file\n"
@@ -179,11 +186,12 @@ class TestTranscribe:
         out = tmp_path / "out.txt"
         out.write_text("existing\n")
         ctx = _make_ctx(stt_text="appended")
+        MockFactory = MagicMock()
+        MockFactory.return_value.record.return_value = self._fake_record()
+        ctx.recorder_factory = MockFactory
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
-            MockFactory.return_value.record.return_value = self._fake_record()
-            runner.invoke(transcribe, ["-o", str(out)], obj=ctx)
+        runner.invoke(transcribe, ["-o", str(out)], obj=ctx)
 
         assert out.read_text() == "existing\nappended\n"
 
@@ -198,11 +206,12 @@ class TestTranscribe:
 
         ctx = _make_ctx()
         ctx.mm.generate_stt.side_effect = RuntimeError("STT failed")
+        MockFactory = MagicMock()
+        MockFactory.return_value.record.side_effect = fake_record
+        ctx.recorder_factory = MockFactory
         runner = CliRunner()
 
-        with patch("src.cli.transcribe.mic_recorder_from_settings") as MockFactory:
-            MockFactory.return_value.record.side_effect = fake_record
-            runner.invoke(transcribe, [], obj=ctx)
+        runner.invoke(transcribe, [], obj=ctx)
 
         if tmp_path_holder:
             assert not tmp_path_holder[0].exists(), "Temp file was not cleaned up"
@@ -294,7 +303,6 @@ class TestListenCommand:
     def test_listen_appends_transcription_then_stops(self, tmp_path: Path) -> None:
         out = tmp_path / "heard.txt"
         ctx = _make_ctx(stt_text="first utterance")
-        runner = CliRunner()
 
         wav_paths: list[Path] = []
         call_count = {"n": 0}
@@ -307,9 +315,12 @@ class TestListenCommand:
                 return p
             raise KeyboardInterrupt
 
-        with patch("src.cli.listen.mic_recorder_from_settings") as MockFactory:
-            MockFactory.return_value.record.side_effect = fake_record
-            result = runner.invoke(listen, [str(out)], obj=ctx)
+        MockFactory = MagicMock()
+        MockFactory.return_value.record.side_effect = fake_record
+        ctx.recorder_factory = MockFactory
+        runner = CliRunner()
+
+        result = runner.invoke(listen, [str(out)], obj=ctx)
 
         assert result.exit_code == 0, result.output
         assert out.read_text() == "first utterance\n"
@@ -319,7 +330,6 @@ class TestListenCommand:
     def test_listen_skips_empty_transcription(self, tmp_path: Path) -> None:
         out = tmp_path / "heard.txt"
         ctx = _make_ctx(stt_text="   ")  # whitespace only
-        runner = CliRunner()
 
         def fake_record() -> Path:
             raise KeyboardInterrupt
@@ -336,9 +346,12 @@ class TestListenCommand:
                 return Path(tmp.name)
             raise KeyboardInterrupt
 
-        with patch("src.cli.listen.mic_recorder_from_settings") as MockFactory:
-            MockFactory.return_value.record.side_effect = fake_record_once
-            runner.invoke(listen, [str(out)], obj=ctx)
+        MockFactory = MagicMock()
+        MockFactory.return_value.record.side_effect = fake_record_once
+        ctx.recorder_factory = MockFactory
+        runner = CliRunner()
+
+        runner.invoke(listen, [str(out)], obj=ctx)
 
         # Nothing written because stripped text was empty.
         assert not out.exists() or out.read_text() == ""
@@ -385,15 +398,17 @@ class TestSpeakCallback:
         ctx = _make_ctx()
         lock = threading.Lock()
         shutdown = threading.Event()
-        cb = _make_speak_callback(ctx, lock, shutdown)
 
         lock_state: dict[str, bool] = {"locked_during_call": False}
 
         def fake_play(*args: Any, **kwargs: Any) -> None:
             lock_state["locked_during_call"] = lock.locked()
 
-        with patch("src.cli.dialogue.play_tts_streaming", side_effect=fake_play) as mock_play:
-            cb("say this")
+        mock_play = MagicMock(side_effect=fake_play)
+        ctx.speaker_factory = mock_play
+        cb = _make_speak_callback(ctx, lock, shutdown)
+
+        cb("say this")
 
         mock_play.assert_called_once()
         assert mock_play.call_args[0][1] == "say this"
@@ -404,21 +419,23 @@ class TestSpeakCallback:
         ctx = _make_ctx()
         shutdown = threading.Event()
         shutdown.set()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         cb = _make_speak_callback(ctx, threading.Lock(), shutdown)
 
-        with patch("src.cli.dialogue.play_tts_streaming") as mock_play:
-            cb("never spoken")
+        cb("never spoken")
 
         mock_play.assert_not_called()
 
     def test_callback_forwards_barge_event_as_cancel(self) -> None:
-        """The shared barge_event must reach play_tts_streaming as cancel=."""
+        """The shared barge_event must reach speaker_factory as cancel=."""
         ctx = _make_ctx()
         barge = threading.Event()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         cb = _make_speak_callback(ctx, threading.Lock(), threading.Event(), barge)
 
-        with patch("src.cli.dialogue.play_tts_streaming") as mock_play:
-            cb("say this")
+        cb("say this")
 
         mock_play.assert_called_once()
         assert mock_play.call_args.kwargs.get("cancel") is barge
@@ -428,6 +445,8 @@ class TestSpeakCallback:
         ctx = _make_ctx()
         lock = threading.Lock()
         shutdown = threading.Event()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         cb = _make_speak_callback(ctx, lock, shutdown)
 
         # Hold the lock so the callback blocks acquiring it, then set
@@ -443,8 +462,7 @@ class TestSpeakCallback:
         t.daemon = True
         t.start()
 
-        with patch("src.cli.dialogue.play_tts_streaming") as mock_play:
-            cb("queued behind listener")
+        cb("queued behind listener")
 
         t.join()
         mock_play.assert_not_called()
@@ -581,28 +599,28 @@ class TestDuplexModes:
     def test_barge_in_true_forwards_event_as_cancel(self) -> None:
         ctx = _make_ctx()
         barge = threading.Event()
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
         cb = _make_speak_callback(ctx, threading.Lock(), threading.Event(), barge)
 
-        with patch("src.cli.dialogue.play_tts_streaming") as mock_play:
-            cb("hi")
+        cb("hi")
 
         assert mock_play.call_args.kwargs.get("cancel") is barge
 
     def test_barge_in_false_passes_cancel_none(self) -> None:
-        """barge_event=None → play_tts_streaming receives cancel=None."""
+        """barge_event=None → speaker_factory receives cancel=None."""
         ctx = _make_ctx()
-        cb = _make_speak_callback(
-            ctx, threading.Lock(), threading.Event(), barge_event=None
-        )
+        mock_play = MagicMock()
+        ctx.speaker_factory = mock_play
+        cb = _make_speak_callback(ctx, threading.Lock(), threading.Event(), barge_event=None)
 
-        with patch("src.cli.dialogue.play_tts_streaming") as mock_play:
-            cb("hi")
+        cb("hi")
 
         mock_play.assert_called_once()
         assert mock_play.call_args.kwargs.get("cancel") is None
 
     def test_half_duplex_sets_tts_active_around_play(self) -> None:
-        """tts_active must be set while play_tts_streaming runs, cleared after."""
+        """tts_active must be set while speaker_factory runs, cleared after."""
         ctx = _make_ctx()
         tts_active = threading.Event()
         seen: dict[str, bool] = {}
@@ -610,6 +628,7 @@ class TestDuplexModes:
         def fake_play(*args: Any, **kwargs: Any) -> None:
             seen["set_during_call"] = tts_active.is_set()
 
+        ctx.speaker_factory = MagicMock(side_effect=fake_play)
         cb = _make_speak_callback(
             ctx,
             threading.Lock(),
@@ -618,8 +637,7 @@ class TestDuplexModes:
             tts_active=tts_active,
         )
 
-        with patch("src.cli.dialogue.play_tts_streaming", side_effect=fake_play):
-            cb("hi")
+        cb("hi")
 
         assert seen["set_during_call"] is True
         assert not tts_active.is_set()  # cleared after
@@ -628,6 +646,7 @@ class TestDuplexModes:
         """finally: block must clear tts_active even if TTS raises."""
         ctx = _make_ctx()
         tts_active = threading.Event()
+        ctx.speaker_factory = MagicMock(side_effect=RuntimeError("boom"))
         cb = _make_speak_callback(
             ctx,
             threading.Lock(),
@@ -636,11 +655,7 @@ class TestDuplexModes:
             tts_active=tts_active,
         )
 
-        with patch(
-            "src.cli.dialogue.play_tts_streaming",
-            side_effect=RuntimeError("boom"),
-        ):
-            cb("hi")
+        cb("hi")
 
         assert not tts_active.is_set()
 
@@ -762,9 +777,9 @@ class TestDialogueCommand:
                 raise KeyboardInterrupt
             original_thread_join(self, timeout)
 
+        ctx.recorder_factory = MagicMock(return_value=recorder_mock)
         with (
             patch("src.cli.dialogue.TextFileHandler", return_value=handler_instance),
-            patch("src.cli.dialogue.mic_recorder_from_settings", return_value=recorder_mock),
             patch.object(threading.Thread, "join", fake_join),
         ):
             result = runner.invoke(dialogue, [], obj=ctx)

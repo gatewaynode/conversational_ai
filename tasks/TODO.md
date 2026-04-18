@@ -453,13 +453,61 @@ Intentionally NOT done in 5.2 (reserved for 5.3):
 
 ### 5.3 Migrate subcommand tests to the factory pattern
 
-- [ ] Update `transcribe`, `listen`, `dialogue`, `speak` subcommands to
+- [x] Update `transcribe`, `listen`, `dialogue`, `speak` subcommands to
       call `ctx.obj.recorder_factory` / `ctx.obj.speaker_factory` instead
       of importing the module-level helpers directly.
-- [ ] Update all subcommand tests to use the factory on `ctx.obj`.
-- [ ] Remove module-level
+- [x] Update all subcommand tests to use the factory on `ctx.obj`.
+- [x] Remove module-level
       `patch("src.cli.<mod>.mic_recorder_from_settings")` calls.
-- [ ] Verify 189/189 still pass.
+- [x] Verify 193/193 still pass.
+
+#### Review (2026-04-18)
+
+Seam is live. Every subcommand body now calls `ctx_obj.recorder_factory` /
+`ctx_obj.speaker_factory` instead of the module-level helpers, and the
+command-level tests override one attribute on `ctx.obj` rather than
+patching import paths.
+
+**Source edits (5 files):**
+- `speak.py`, `watch.py` — dropped `play_tts_streaming` import,
+  routed the playback call through `ctx_obj.speaker_factory`.
+- `transcribe.py`, `listen.py` — dropped `mic_recorder_from_settings`
+  import, routed recorder construction through `ctx_obj.recorder_factory`.
+- `dialogue.py` — dropped both direct imports; `_make_speak_callback`
+  now calls `ctx_obj.speaker_factory`, the command body builds the
+  recorder via `ctx_obj.recorder_factory`. `MicRecorder` stayed in the
+  import list because `_listener_loop`'s `recorder is None` fallback
+  still constructs one directly.
+
+**Test migration (`tests/test_cli_subcommands.py`):**
+- Speak (6 sites), transcribe (4), listen (2), dialogue
+  `_make_speak_callback` (7), dialogue command (1) — all collapsed
+  to `ctx.<factory> = MagicMock(...)` assignments. The `with
+  patch(...)` context managers are gone from the factory-using paths,
+  so test bodies flattened by one indent and read more directly.
+
+**Left intentionally unchanged (scheduled for 5.4):**
+- Six `TestListenerLoop` / `TestDuplexModes` tests still carry
+  `patch("src.cli.dialogue.MicRecorder", ...)` because they exercise
+  `_listener_loop`'s default-recorder fallback. The cleaner move is
+  to pass `recorder=recorder_mock` into `_listener_loop` directly and
+  drop the fallback, but that belongs with the test-file split in 5.4
+  where those tests are being moved anyway.
+
+**Seam shape, for future reference:**
+`ctx.recorder_factory` / `ctx.speaker_factory` accept the real
+function's exact signature (positional mm/text/voice/speed/lang_code +
+keyword `cancel=`, or `mic` + keyword `calibrate_override=`). A test
+lambda that swallows `*args, **kwargs` works; so does a
+`MagicMock(return_value=recorder_mock)`. No Protocol or stricter
+typing needed — `Callable[..., X]` in the dataclass is deliberate.
+
+**Pre-existing ruff violations, not mine to fix here:**
+`ruff check` flags two F401s in `test_cli_subcommands.py` that predate
+this task (`dataclasses.field` import and an unused
+`import src.cli.dialogue as dialogue_mod` inside
+`test_record_failure_resets_backoff_after_success`). Noted for the 5.4
+pass when this file is being split anyway.
 
 ### 5.4 Split `tests/test_cli_subcommands.py` (834 lines)
 

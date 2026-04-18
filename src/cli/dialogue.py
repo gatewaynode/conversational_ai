@@ -10,12 +10,7 @@ from pathlib import Path
 import click
 
 from src.cli import CliContext
-from src.cli.audio_io import (
-    AudioDeviceError,
-    MicRecorder,
-    mic_recorder_from_settings,
-    play_tts_streaming,
-)
+from src.cli.audio_io import AudioDeviceError, MicRecorder
 from src.cli.watch import TextFileHandler
 
 logger = logging.getLogger(__name__)
@@ -65,7 +60,7 @@ def _make_speak_callback(
                 if tts_active is not None:
                     tts_active.set()
                 try:
-                    play_tts_streaming(
+                    ctx_obj.speaker_factory(
                         ctx_obj.mm,
                         text,
                         s.voice,
@@ -256,7 +251,7 @@ def dialogue(
             if v is not None
         }
     )
-    recorder = mic_recorder_from_settings(mic, calibrate_override=calibrate_noise)
+    recorder = ctx_obj.recorder_factory(mic, calibrate_override=calibrate_noise)
     try:
         if recorder.calibrate_noise:
             recorder.calibrate()
@@ -266,9 +261,7 @@ def dialogue(
     # --- Watcher (file → TTS) ---
     handler = TextFileHandler(
         speak_path,
-        _make_speak_callback(
-            ctx_obj, inference_lock, shutdown, barge_event, tts_active
-        ),
+        _make_speak_callback(ctx_obj, inference_lock, shutdown, barge_event, tts_active),
     )
 
     # --- Listener (mic → STT → file) ---

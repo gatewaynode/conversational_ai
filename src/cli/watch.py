@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 
 from src.cli import CliContext
-from src.cli.audio_io import AudioDeviceError, play_tts_streaming
+from src.cli.audio_io import AudioDeviceError
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def watch(ctx_obj: CliContext, file: str) -> None:
 
     def on_new_text(text: str) -> None:
         try:
-            play_tts_streaming(ctx_obj.mm, text, s.voice, s.speed, s.lang_code)
+            ctx_obj.speaker_factory(ctx_obj.mm, text, s.voice, s.speed, s.lang_code)
         except AudioDeviceError as exc:
             click.echo(str(exc), err=True)
             audio_error.set()

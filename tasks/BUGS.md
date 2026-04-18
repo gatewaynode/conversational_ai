@@ -67,3 +67,62 @@ the error should propagate to the main thread and trigger a clean shutdown.
   shutdown event so the main thread exits cleanly.
 - Add a `check_audio_devices()` helper that probes for available input/output
   devices at startup and fails fast with guidance.
+
+---
+
+## B4 — Dead imports in `tests/test_cli_subcommands.py` (two F401s)
+
+**Severity:** Low (lint-only; tests pass)
+**Affects:** `tests/test_cli_subcommands.py`
+**First observed:** 2026-04-18, during Task 5.3 verification. Both errors
+predate 5.3 — they exist at commit `5304ecf` on `main`.
+
+`uv run ruff check tests/test_cli_subcommands.py` reports two F401
+"imported but unused" violations:
+
+### B4.1 — `dataclasses.field` imported but unused
+
+```
+tests/test_cli_subcommands.py:12:36
+  from dataclasses import dataclass, field
+                                     ^^^^^
+```
+
+The file uses `@dataclass` on `FakeSTTOutput` (line 38) but no `field(...)`
+default factories. The `field` symbol in the import is dead. Likely a
+leftover from an earlier iteration of `FakeSTTOutput` that had
+`segments: list[dict] = field(default_factory=list)` before the field was
+simplified to a `None`-defaulted optional.
+
+**Fix:** `from dataclasses import dataclass` (drop `field`).
+
+### B4.2 — Unused local `import src.cli.dialogue as dialogue_mod`
+
+```
+tests/test_cli_subcommands.py:558:36
+  import src.cli.dialogue as dialogue_mod
+                             ^^^^^^^^^^^^
+```
+
+Inside `TestListenerLoop.test_record_failure_resets_backoff_after_success`.
+The test body never references `dialogue_mod`. The sibling test
+`test_record_failures_trigger_backoff_and_give_up` has its own identical
+local import and *does* reference `dialogue_mod._RECORD_BACKOFF_START` /
+`_RECORD_BACKOFF_MAX` / `_RECORD_MAX_CONSECUTIVE_FAILURES`; the reset-
+backoff test was apparently cloned from that one and the import was kept
+even though the constants aren't checked.
+
+**Fix:** delete the local `import` line. Alternatively, re-assert against
+`dialogue_mod._RECORD_BACKOFF_START` where the test sets up `fake_record`
+so the constant stays in sync with the source.
+
+### Why deferred
+
+Task 5.3's review explicitly scoped these out. Task 5.4 is going to split
+`test_cli_subcommands.py` per-subcommand (speak, transcribe, listen,
+dialogue, serve), and both F401s will surface in whichever file ends up
+owning `TestListenerLoop` / `FakeSTTOutput`. Fixing in-place now and then
+moving the code twice in 5.4 is churn. Resolve as part of the split.
+
+**Guard rail:** if any lint CI hook is added before 5.4 lands, fix both
+F401s immediately rather than exempting the file — both are one-liners.

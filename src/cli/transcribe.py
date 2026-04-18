@@ -5,7 +5,7 @@ from __future__ import annotations
 import click
 
 from src.cli import CliContext
-from src.cli.audio_io import AudioDeviceError, mic_recorder_from_settings
+from src.cli.audio_io import AudioDeviceError
 
 
 @click.command()
@@ -61,7 +61,7 @@ def transcribe(
             if v is not None
         }
     )
-    recorder = mic_recorder_from_settings(mic, calibrate_override=calibrate_noise)
+    recorder = ctx_obj.recorder_factory(mic, calibrate_override=calibrate_noise)
     try:
         path = recorder.record()
     except AudioDeviceError as exc:
