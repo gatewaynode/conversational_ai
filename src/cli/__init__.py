@@ -45,6 +45,7 @@ MODEL_REQUIREMENTS: dict[str, tuple[bool, bool]] = {
     "transcribe": (False, True),
     "listen": (False, True),
     "dialogue": (True, True),
+    "converse": (True, True),
     "serve": (False, False),
 }
 

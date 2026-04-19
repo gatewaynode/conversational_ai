@@ -387,15 +387,54 @@ Accepting the overshoot; Task 5.6 stays open as a monitor.
 
 ---
 
-## Feature 3 — Claude Code skill + installer
+## Feature 3 — Voice conversation with Claude Code + skill ecosystem
 
-**Goal:** ship reusable Claude Code skills that wrap `cai` for two use cases
-(dictation, dialogue), plus a `cai install-skill` command that drops them
-into `~/.claude/skills/`.
+**Goal:** ship the `cai converse` runtime that bridges voice ↔ Claude Code
+headless (`claude -p --resume`), plus three reusable skills (`voice-mode`,
+`cai-dictation`, `cai-dialogue`) and a `cai install-skill` installer.
+
+**Primary UX:** user says "switch to voice mode" in a Claude Code session;
+the `voice-mode` skill triggers Claude to run `cai converse --session-id
+$CURRENT_SESSION`; the same session continues by voice until Ctrl+C.
+
+**Approved plan:** `/Users/john/.claude/plans/stateful-stirring-pixel.md`.
+Refinement answers: `tasks/TASK-REFINEMENT.md`.
+
+### 3.0 `cai converse` runtime (NEW — runtime that makes skills useful)
+
+Three-thread bridge: re-uses `_listener_loop` (mic→STT→file) and
+`TextFileHandler` + `_make_speak_callback` (file→TTS) from `dialogue.py`;
+adds a new bridge thread that tails the human file, calls `claude -p
+"<line>" --resume <id> --output-format json`, and appends Claude's response
+to the agent file.
+
+- [ ] **3.0a** Skeleton `src/cli/converse.py` with three-thread wiring;
+      bridge just echoes the transcribed line back (no `claude` yet).
+      Verify end-to-end mic → STT → bridge → TTS.
+- [ ] **3.0b** Session resolution: `--session-id <id>` (explicit attach),
+      `--resume` (from state file), default (fresh). Mutex between the
+      two flags. State file at `~/.local/state/conversational_ai/session`.
+      Startup probe validates the session id; bail cleanly on invalid.
+- [ ] **3.0c** Wire `claude -p "<line>" --resume <id> --output-format json`
+      into the bridge. Parse response text. Persist session id on success.
+- [ ] **3.0d** Error handling: subprocess timeout, non-zero exit (speak
+      "session ended" + shutdown), missing `claude` binary (startup error).
+- [ ] **3.0e** Wake-word gating via `build_wake_gate` (same knobs as
+      `listen` / `dialogue`).
+- [ ] Register `converse` in `cli.py` and `MODEL_REQUIREMENTS` as
+      `(True, True)`; add `claude_runner_factory: Callable` to `CliContext`
+      as the test seam for the subprocess call.
 
 ### 3.1 Author the skill files
 
 - [ ] Create `skills/` directory in the repo.
+- [ ] `skills/voice-mode/SKILL.md` — primary skill; Claude auto-loads when
+      invoked via `cai converse`. Style guide: short declarative sentences,
+      no markdown tables or code fences in the default path, verbal error
+      handling ("that didn't work, here's why"), minimal clarifying
+      questions (voice round-trips are slow), accessibility notes.
+      Document the "don't type in the terminal while voice mode is active"
+      constraint.
 - [ ] `skills/cai-dictation/SKILL.md` — frontmatter + instructions for when
       Claude should invoke `cai listen` / `cai transcribe` on the user's
       behalf (e.g., "when the user asks to dictate to a file", "when they
@@ -409,9 +448,9 @@ into `~/.claude/skills/`.
 ### 3.2 Installer subcommand
 
 - [ ] New `src/cli/install_skill.py` implementing `cai install-skill`.
-- [ ] Flags: `--mode dictation|dialogue|both` (default `both`),
+- [ ] Flags: `--mode voice-mode|dictation|dialogue|all` (default `all`),
       `--target DIR` (default `~/.claude/skills`), `--force` (overwrite).
-- [ ] Copy `skills/cai-<mode>/` into `<target>/cai-<mode>/` idempotently.
+- [ ] Copy `skills/<mode>/` into `<target>/<mode>/` idempotently.
       If target exists and `--force` not set, print a diff-style message
       and exit non-zero.
 - [ ] Resolve skill source directory via `importlib.resources` so it works
@@ -429,14 +468,34 @@ into `~/.claude/skills/`.
 
 ### 3.4 Tests
 
+- [ ] `tests/test_converse.py`: listener/bridge/watcher wiring with a fake
+      `claude_runner_factory`. Cover fresh-session, `--session-id`,
+      `--resume`, mutex validation, invalid-session shutdown.
 - [ ] `tests/test_install_skill.py`: CliRunner coverage for fresh install,
       `--force` overwrite, missing source directory, uninstall.
-- [ ] Lint the two `SKILL.md` files for required frontmatter fields.
+- [ ] Lint all three `SKILL.md` files for required frontmatter fields.
 
 ### 3.5 Docs
 
-- [ ] README section: "Claude Code integration" with `cai install-skill`
-      example and a one-line description of each skill.
+- [ ] PRD.md: add `cai converse` subcommand section (mirrors the
+      `dialogue` section style); note `cai install-skill` briefly.
+- [ ] README.md: "Voice conversation with Claude Code" as headline,
+      "Claude Code skills" section with installer examples.
+- [ ] CONTRIBUTING.md: module map rows for `converse.py`,
+      `install_skill.py`, and new test files; bump test count.
+- [ ] tasks/ARCHITECTURE.md: add converse threading diagram.
+
+### Roadmap (post-v1, deferred)
+
+- Streaming TTS via `--output-format stream-json` (speak sentence-by-
+  sentence as tokens arrive).
+- Voice-command stop (say "stop" cancels in-flight TTS + pending
+  `claude -p` turn without ending the session).
+- Direct Anthropic API backend (`--backend api`) for lower latency when
+  tool access isn't needed.
+- Shared terminal/voice safety: file lock or socket probe so `cai
+  converse` and an active terminal Claude on the same session id don't
+  interleave writes to the session jsonl.
 
 ---
 

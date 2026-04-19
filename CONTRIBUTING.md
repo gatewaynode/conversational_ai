@@ -43,6 +43,7 @@ Inference paths:
 | `src/cli/watch.py` | `cai watch` — `TextFileHandler` poller thread; file → TTS |
 | `src/cli/listen.py` | `cai listen` — continuous mic → STT → append to file |
 | `src/cli/dialogue.py` | `cai dialogue` — watch + listen with barge-in / duplex controls |
+| `src/cli/wake_word.py` | `WakeWordGate` filter + `build_wake_gate()` helper (used by `listen` and `dialogue`) |
 
 ### Key design decisions
 
@@ -96,7 +97,7 @@ POST /v1/stt  multipart file
 Tests live in `tests/`. All tests are real behaviour tests — no always-true assertions, no mocks that hide real logic.
 
 ```bash
-uv run pytest          # all 189 tests
+uv run pytest          # all 220 tests
 uv run pytest -v       # verbose
 uv run pytest tests/test_routes.py  # single file
 ```
@@ -116,6 +117,7 @@ uv run pytest tests/test_routes.py  # single file
 | `test_mic_calibration.py` | `MicRecorder.calibrate()` + effective-threshold math |
 | `test_mic_factory.py` | `mic_recorder_from_settings()` settings → recorder wiring |
 | `test_cli_context.py` | `CliContext` factory defaults + lazy model loading via the Click group callback |
+| `test_wake_word.py` | `WakeWordGate` trigger match, timeout re-arm, alert feedback, validation |
 | `test_speak.py`, `test_transcribe.py`, `test_watch.py`, `test_listen.py`, `test_dialogue.py`, `test_serve.py` | Per-subcommand tests via `CliRunner` using the factory seam (see Testing patterns below) |
 
 ### Adding a new test
