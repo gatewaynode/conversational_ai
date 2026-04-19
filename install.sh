@@ -64,7 +64,10 @@ log "Installing Python dependencies"
 mkdir -p "$BIN_DIR"
 cat > "$ENTRY" << EOF
 #!/usr/bin/env bash
-exec uv run --directory "$INSTALL_DIR" python cli.py "\$@"
+# --project sets the uv project root without changing the working dir, so
+# subcommands like \`converse\` see the caller's cwd (needed for Claude Code's
+# ~/.claude/projects/<cwd-slug>/ transcript lookup).
+exec uv run --project "$INSTALL_DIR" python "$INSTALL_DIR/cli.py" "\$@"
 EOF
 chmod +x "$ENTRY"
 log "Created entry script at $ENTRY"

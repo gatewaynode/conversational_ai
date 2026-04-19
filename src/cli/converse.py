@@ -5,7 +5,7 @@ Three threads in one process:
 - **Listener** (re-used `_listener_loop`): mic → STT → appends to the human
   file.
 - **Bridge** (`TextFileHandler` + `_make_bridge_callback`): tails the human
-  file and writes to the agent file. 3.0a echoes verbatim; 3.0c wires
+  file and writes to the agent file. 3.0a/b echo verbatim; 3.0c wires
   `claude -p --resume <id>` in its place.
 - **Watcher** (`TextFileHandler` + `_make_speak_callback`): tails the agent
   file and speaks new content via TTS.
@@ -30,16 +30,83 @@ from src.cli.watch import TextFileHandler
 logger = logging.getLogger(__name__)
 
 _DEFAULT_STATE_DIR = Path.home() / ".local" / "state" / "conversational_ai" / "converse"
+_SESSION_STATE_FILE = Path.home() / ".local" / "state" / "conversational_ai" / "session"
+_CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+
+
+def _cwd_slug() -> str:
+    """Return Claude Code's project-dir slug for the current working directory.
+
+    Claude Code stores transcripts at `~/.claude/projects/<slug>/<id>.jsonl`
+    where `<slug>` is the absolute cwd with `/` and `_` replaced by `-`.
+    """
+    return str(Path.cwd().resolve()).replace("/", "-").replace("_", "-")
+
+
+def _read_last_session_id() -> str | None:
+    """Return the last persisted session id, or None if absent/empty."""
+    try:
+        text = _SESSION_STATE_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logger.exception("Failed to read session state %s", _SESSION_STATE_FILE)
+        return None
+    return text or None
+
+
+def _write_last_session_id(session_id: str) -> None:
+    """Persist `session_id` to the state file (best-effort)."""
+    try:
+        _SESSION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SESSION_STATE_FILE.write_text(session_id + "\n", encoding="utf-8")
+    except OSError:
+        logger.exception("Failed to write session state %s", _SESSION_STATE_FILE)
+
+
+def _probe_session(session_id: str) -> None:
+    """Raise ClickException if `session_id` has no transcript in this cwd."""
+    transcript = _CLAUDE_PROJECTS / _cwd_slug() / f"{session_id}.jsonl"
+    if not transcript.is_file():
+        raise click.ClickException(
+            f"Session {session_id!r} not found at {transcript}. "
+            "Run `claude` once in this directory to create it, or pass a valid id."
+        )
+
+
+def _resolve_session_id(session_id: str | None, resume: bool) -> str | None:
+    """Resolve the requested session id per the 3.0b policy.
+
+    - Both set → UsageError (mutex).
+    - `--session-id X` → X.
+    - `--resume` → last persisted id; UsageError if none.
+    - Neither → None (fresh session; 3.0c will capture the id from `claude`).
+    """
+    if session_id and resume:
+        raise click.UsageError("--session-id and --resume are mutually exclusive.")
+    if session_id:
+        return session_id
+    if resume:
+        last = _read_last_session_id()
+        if not last:
+            raise click.UsageError(
+                f"--resume requested but no prior session at {_SESSION_STATE_FILE}. "
+                "Pass --session-id explicitly or omit both flags to start fresh."
+            )
+        return last
+    return None
 
 
 def _make_bridge_callback(
     agent_path: Path,
     shutdown: threading.Event,
+    session_id: str | None,
 ) -> Callable[[str], None]:
     """Build the bridge on_text callback.
 
-    3.0a: echoes each transcribed line straight to the agent file. 3.0c
-    replaces this with a `claude -p --resume <id>` subprocess call.
+    3.0a/b: echoes each transcribed line straight to the agent file. 3.0c
+    replaces this with a `claude -p --resume <session_id>` subprocess call;
+    `session_id` is threaded through now so the closure is stable.
     """
 
     def _bridge(text: str) -> None:
@@ -49,7 +116,8 @@ def _make_bridge_callback(
             line = raw.strip()
             if not line:
                 continue
-            click.echo(f"[bridge] {line}", err=True)
+            tag = f"[bridge:{session_id}]" if session_id else "[bridge]"
+            click.echo(f"{tag} {line}", err=True)
             try:
                 with agent_path.open("a", encoding="utf-8") as f:
                     f.write(line + "\n")
@@ -60,6 +128,19 @@ def _make_bridge_callback(
 
 
 @click.command()
+@click.option(
+    "--session-id",
+    "session_id",
+    default=None,
+    metavar="UUID",
+    help="Attach to an existing Claude Code session by id (validated at startup).",
+)
+@click.option(
+    "--resume",
+    is_flag=True,
+    default=False,
+    help="Resume the last persisted session id. Mutually exclusive with --session-id.",
+)
 @click.option(
     "--human-file",
     default=None,
@@ -99,6 +180,8 @@ def _make_bridge_callback(
 @click.pass_obj
 def converse(
     ctx_obj: CliContext,
+    session_id: str | None,
+    resume: bool,
     human_file: str | None,
     agent_file: str | None,
     mic_threshold: float | None,
@@ -106,13 +189,21 @@ def converse(
     mic_min_speech: float | None,
     calibrate_noise: bool | None,
 ) -> None:
-    """Voice-converse with Claude Code (3.0a skeleton: echo-back only).
+    """Voice-converse with Claude Code (3.0b: session resolution, echo-back bridge).
 
-    Three threads wire mic → STT → bridge → TTS. In this 3.0a skeleton the
-    bridge echoes each transcribed line straight to the agent file, so TTS
-    speaks your own words back. This proves the pipeline before `claude -p`
-    is wired in (phase 3.0c). Press Ctrl+C to stop.
+    Three threads wire mic → STT → bridge → TTS. In this phase the bridge
+    still echoes each transcribed line verbatim (the `claude -p` subprocess
+    call lands in 3.0c), but session resolution is live: pass
+    `--session-id <uuid>` to attach, `--resume` to pick up the last
+    persisted id, or neither for a fresh session. Claude Code must run
+    from this cwd so transcripts resolve under
+    ~/.claude/projects/<cwd-slug>/. Press Ctrl+C to stop.
     """
+    resolved_session_id = _resolve_session_id(session_id, resume)
+    if resolved_session_id is not None:
+        _probe_session(resolved_session_id)
+        _write_last_session_id(resolved_session_id)
+
     human_path = Path(human_file).expanduser() if human_file else _DEFAULT_STATE_DIR / "human.txt"
     agent_path = Path(agent_file).expanduser() if agent_file else _DEFAULT_STATE_DIR / "agent.txt"
     human_path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +242,7 @@ def converse(
     )
     agent_handler = TextFileHandler(agent_path, speak_cb)
 
-    bridge_cb = _make_bridge_callback(agent_path, shutdown)
+    bridge_cb = _make_bridge_callback(agent_path, shutdown, resolved_session_id)
     human_handler = TextFileHandler(human_path, bridge_cb)
 
     listener_thread = threading.Thread(

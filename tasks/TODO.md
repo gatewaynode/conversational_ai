@@ -408,13 +408,15 @@ adds a new bridge thread that tails the human file, calls `claude -p
 "<line>" --resume <id> --output-format json`, and appends Claude's response
 to the agent file.
 
-- [ ] **3.0a** Skeleton `src/cli/converse.py` with three-thread wiring;
+- [x] **3.0a** Skeleton `src/cli/converse.py` with three-thread wiring;
       bridge just echoes the transcribed line back (no `claude` yet).
       Verify end-to-end mic → STT → bridge → TTS.
-- [ ] **3.0b** Session resolution: `--session-id <id>` (explicit attach),
+- [x] **3.0b** Session resolution: `--session-id <id>` (explicit attach),
       `--resume` (from state file), default (fresh). Mutex between the
       two flags. State file at `~/.local/state/conversational_ai/session`.
       Startup probe validates the session id; bail cleanly on invalid.
+      (Installer shim also fixed: `uv run --project` instead of
+      `--directory` so the caller's cwd reaches `Path.cwd()`.)
 - [ ] **3.0c** Wire `claude -p "<line>" --resume <id> --output-format json`
       into the bridge. Parse response text. Persist session id on success.
 - [ ] **3.0d** Error handling: subprocess timeout, non-zero exit (speak
