@@ -5,8 +5,8 @@ Three threads in one process:
 - **Listener** (re-used `_listener_loop`): mic → STT → appends to the human
   file.
 - **Bridge** (`TextFileHandler` + `_make_bridge_callback`): tails the human
-  file and writes to the agent file. 3.0a/b echo verbatim; 3.0c wires
-  `claude -p --resume <id>` in its place.
+  file and invokes `claude -p --output-format json [--resume <id>]` per
+  line, then appends the `result` field to the agent file.
 - **Watcher** (`TextFileHandler` + `_make_speak_callback`): tails the agent
   file and speaks new content via TTS.
 
@@ -15,7 +15,10 @@ Shutdown via Ctrl+C sets the shared event; all three threads exit cleanly.
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
+import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -101,26 +104,77 @@ def _make_bridge_callback(
     agent_path: Path,
     shutdown: threading.Event,
     session_id: str | None,
+    runner: Callable[[str, str | None], subprocess.CompletedProcess[str]],
 ) -> Callable[[str], None]:
     """Build the bridge on_text callback.
 
-    3.0a/b: echoes each transcribed line straight to the agent file. 3.0c
-    replaces this with a `claude -p --resume <session_id>` subprocess call;
-    `session_id` is threaded through now so the closure is stable.
+    Each transcribed line is sent to `claude -p` via `runner`; the JSON
+    `result` field is appended to the agent file and the returned
+    `session_id` is captured so the fresh-session case threads an id
+    across subsequent turns. Robust error handling (timeouts, nonzero
+    exits, missing binary mid-run) is deferred to 3.0d — here we log and
+    continue so the bridge thread survives.
     """
+    current_session_id = session_id
 
     def _bridge(text: str) -> None:
+        nonlocal current_session_id
         if shutdown.is_set():
             return
         for raw in text.splitlines():
             line = raw.strip()
             if not line:
                 continue
-            tag = f"[bridge:{session_id}]" if session_id else "[bridge]"
+            tag = f"[bridge:{current_session_id}]" if current_session_id else "[bridge]"
             click.echo(f"{tag} {line}", err=True)
+
+            try:
+                proc = runner(line, current_session_id)
+            except Exception:
+                logger.exception("claude runner raised on prompt %r", line)
+                continue
+
+            if proc.returncode != 0:
+                logger.warning(
+                    "claude exited %d: %s",
+                    proc.returncode,
+                    (proc.stderr or "")[:500],
+                )
+                continue
+
+            try:
+                payload = json.loads(proc.stdout or "")
+            except json.JSONDecodeError:
+                logger.warning(
+                    "claude stdout was not JSON: %s",
+                    (proc.stdout or "")[:500],
+                )
+                continue
+
+            if payload.get("is_error"):
+                logger.warning(
+                    "claude reported is_error (subtype=%r stop_reason=%r "
+                    "num_turns=%r permission_denials=%r result=%r)",
+                    payload.get("subtype"),
+                    payload.get("stop_reason"),
+                    payload.get("num_turns"),
+                    payload.get("permission_denials"),
+                    payload.get("result"),
+                )
+                continue
+
+            result = (payload.get("result") or "").strip()
+            if not result:
+                continue
+
+            new_session_id = payload.get("session_id")
+            if new_session_id and new_session_id != current_session_id:
+                current_session_id = new_session_id
+                _write_last_session_id(current_session_id)
+
             try:
                 with agent_path.open("a", encoding="utf-8") as f:
-                    f.write(line + "\n")
+                    f.write(result + "\n")
             except OSError:
                 logger.exception("Failed to append to agent file %s", agent_path)
 
@@ -189,16 +243,21 @@ def converse(
     mic_min_speech: float | None,
     calibrate_noise: bool | None,
 ) -> None:
-    """Voice-converse with Claude Code (3.0b: session resolution, echo-back bridge).
+    """Voice-converse with Claude Code.
 
-    Three threads wire mic → STT → bridge → TTS. In this phase the bridge
-    still echoes each transcribed line verbatim (the `claude -p` subprocess
-    call lands in 3.0c), but session resolution is live: pass
-    `--session-id <uuid>` to attach, `--resume` to pick up the last
-    persisted id, or neither for a fresh session. Claude Code must run
-    from this cwd so transcripts resolve under
+    Three threads wire mic → STT → `claude -p` → TTS. Pass
+    `--session-id <uuid>` to attach to an existing Claude Code session,
+    `--resume` to pick up the last persisted id, or neither for a fresh
+    session (the id returned by the first turn is persisted automatically).
+    Claude Code must run from this cwd so transcripts resolve under
     ~/.claude/projects/<cwd-slug>/. Press Ctrl+C to stop.
     """
+    if shutil.which("claude") is None:
+        raise click.ClickException(
+            "`claude` CLI not found on PATH. Install Claude Code "
+            "(https://claude.com/claude-code) before running `cai converse`."
+        )
+
     resolved_session_id = _resolve_session_id(session_id, resume)
     if resolved_session_id is not None:
         _probe_session(resolved_session_id)
@@ -242,7 +301,12 @@ def converse(
     )
     agent_handler = TextFileHandler(agent_path, speak_cb)
 
-    bridge_cb = _make_bridge_callback(agent_path, shutdown, resolved_session_id)
+    bridge_cb = _make_bridge_callback(
+        agent_path,
+        shutdown,
+        resolved_session_id,
+        ctx_obj.claude_runner_factory,
+    )
     human_handler = TextFileHandler(human_path, bridge_cb)
 
     listener_thread = threading.Thread(
@@ -262,8 +326,11 @@ def converse(
     )
     listener_thread.start()
 
+    session_banner = (
+        f"session={resolved_session_id}" if resolved_session_id else "session=fresh"
+    )
     click.echo(
-        f"Converse active (3.0a echo-back) — "
+        f"Converse active ({session_banner}) — "
         f"human→{human_path}, agent→{agent_path}. Ctrl+C to stop.",
         err=True,
     )

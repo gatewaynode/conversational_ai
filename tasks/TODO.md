@@ -417,8 +417,11 @@ to the agent file.
       Startup probe validates the session id; bail cleanly on invalid.
       (Installer shim also fixed: `uv run --project` instead of
       `--directory` so the caller's cwd reaches `Path.cwd()`.)
-- [ ] **3.0c** Wire `claude -p "<line>" --resume <id> --output-format json`
+- [x] **3.0c** Wire `claude -p "<line>" --resume <id> --output-format json`
       into the bridge. Parse response text. Persist session id on success.
+      (Test seam: `claude_runner_factory` on `CliContext`. Pre-flight
+      `shutil.which("claude")`. Live-tested fresh / `--session-id` /
+      `--resume` — all three return agent replies via TTS.)
 - [ ] **3.0d** Error handling: subprocess timeout, non-zero exit (speak
       "session ended" + shutdown), missing `claude` binary (startup error).
 - [ ] **3.0e** Wake-word gating via `build_wake_gate` (same knobs as

@@ -1,114 +1,157 @@
 # Continuity notes — Feature 3 implementation
 
-_Last updated: 2026-04-19 (after 3.0b live-test). Delete this file after
-Feature 3 lands._
+_Last updated: 2026-04-19 (pre-compact, after 3.0c live-test + rich
+is_error log). Delete this file after Feature 3 lands._
 
 ## Where we are
 
-- **Completed:** 3.0a (three-thread echo-back skeleton) and 3.0b
-  (session resolution: `--session-id`, `--resume`, mutex, state file,
-  startup probe). Both live-tested by user.
-- **Next up:** 3.0c — wire `claude -p "<line>" --resume <id>
-  --output-format json` into the bridge; add `claude_runner_factory` to
-  `CliContext`; persist resolved id on successful turn.
+- **Completed:** 3.0a (three-thread echo-back skeleton), 3.0b (session
+  resolution: `--session-id`, `--resume`, mutex, state file, startup
+  probe), and **3.0c** (`claude -p` subprocess wired into the bridge
+  with JSON parsing, session-id capture/persist, `shutil.which("claude")`
+  pre-flight, `claude_runner_factory` test seam on `CliContext`). All
+  three live-tested by user.
+- **Next up:** 3.0d — error handling for subprocess failure modes
+  (timeout, non-zero exit, missing `claude` at runtime).
 - **Mode:** out of plan mode, coding. Plan approved.
 - **Plan file:** `/Users/john/.claude/plans/stateful-stirring-pixel.md`
 - **Refinement answers:** `tasks/TASK-REFINEMENT.md`
-- **TODO sync:** `tasks/TODO.md` §Feature 3 updated — 3.0a/3.0b boxes
-  checked.
+- **TODO sync:** `tasks/TODO.md` §Feature 3 updated — 3.0a/3.0b/3.0c
+  boxes checked.
 
-## What 3.0b shipped (uncommitted in the working tree)
+## What 3.0c shipped (uncommitted in the working tree)
 
-### `src/cli/converse.py`
+### `src/cli/__init__.py`
 
-- Helpers (inline, under 30 lines each — no separate `_session.py` yet):
-  - `_cwd_slug()` — Claude Code project-dir slug rule: `/` and `_` →
-    `-`. Verified against `~/.claude/projects/-Users-john-ai-bits-conversational-ai/`.
-  - `_read_last_session_id()` / `_write_last_session_id(id)` —
-    `~/.local/state/conversational_ai/session`, one line, best-effort.
-  - `_probe_session(id)` — raises `click.ClickException` if
-    `~/.claude/projects/<slug>/<id>.jsonl` is missing. Exit 1 before
-    threads start.
-  - `_resolve_session_id(session_id, resume)` — mutex (UsageError),
-    `--resume` empty state → UsageError, default → None.
-- New Click options: `--session-id UUID`, `--resume`.
-- Bridge closure now takes `session_id` (unused in echo body; threaded
-  through for 3.0c). Log prefix shows `[bridge:<id>]` when set.
-- Docstring updated: "3.0b: session resolution, echo-back bridge".
+- New `_default_claude_runner(prompt, session_id) -> CompletedProcess`:
+  invokes `claude -p <prompt> [--resume <id>] --output-format json` with
+  `timeout=300`, `capture_output=True`, `text=True`.
+- `CliContext.claude_runner_factory` field: typed
+  `Callable[[str, str | None], subprocess.CompletedProcess[str]]`,
+  defaulted to `_default_claude_runner`. Tests swap it out.
 
-### `install.sh` — CRITICAL FIX
+### `src/cli/converse.py` (current line refs)
 
-Shim was using `uv run --directory "$INSTALL_DIR"` which `cd`s into the
-installed copy before exec, so `Path.cwd()` returned
-`/Users/john/.local/share/conversational_ai` and the slug came out
-`-Users-john-.local-share-conversational-ai` — probe always failed.
-Switched to `uv run --project "$INSTALL_DIR" python "$INSTALL_DIR/cli.py"`.
-`--project` sets uv's project root without changing cwd. Caller's cwd
-now reaches `Path.cwd()` inside the Python process.
+- Imports added: `json`, `shutil`, `subprocess` (lines 18–22).
+- `_make_bridge_callback` (line 103) takes `runner` as its fourth arg
+  and keeps `current_session_id` mutable via `nonlocal` (line 121) so
+  the fresh-session case can capture the id returned by turn 1 and
+  thread it into turn 2+.
+- Inside `_bridge`: call runner → non-zero exit skip → `json.loads`
+  stdout (skip on JSONDecodeError) → `is_error` rich log at line 154
+  (subtype, stop_reason, num_turns, permission_denials, result) →
+  extract `result` text → if response's `session_id` differs from
+  `current_session_id`, update + `_write_last_session_id` → append
+  `result` to agent file.
+- `shutil.which("claude")` pre-flight at line 255 (in `converse()`
+  command body): raises ClickException if missing.
+- `ctx_obj.claude_runner_factory` threaded into the bridge at line 308.
+- Startup banner (just after listener thread starts) prints
+  `session=<id>` or `session=fresh`.
 
-Re-run `./install.sh` after any dev change that relies on caller cwd.
+### `claude -p --output-format json` schema (verified empirically)
 
-## 3.0b verification (done)
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "<agent response text>",
+  "session_id": "<uuid>",
+  "stop_reason": "end_turn",
+  "permission_denials": [],
+  "api_error_status": null,
+  "num_turns": 1,
+  "duration_ms": 2014,
+  "total_cost_usd": 0.012,
+  "usage": { ... }
+}
+```
 
-- Dev-tree helpers exercised: slug matches real project dir; mutex,
-  empty-`--resume`, fresh (None), and invalid-id probe all behave.
-- `uv run python cli.py converse --help` shows new flags.
-- `./install.sh` + `cai converse --help` confirmed 3.0b.
-- User live-tested: valid attach, invalid probe, `--resume`, mutex — all
-  return as expected.
+- `session_id` stays stable across `--resume` calls (same id returned).
+- Bogus `--resume <unknown-id>` prints non-JSON
+  `No conversation found with session ID: …` to stdout and exits 0.
+  So we can't rely on exit code for "session gone" — must JSON-parse.
 
-## Tests NOT written for 3.0b (intentional)
+Robust error handling (timeout, non-zero exit with TTS "session ended"
+shutdown, missing-binary mid-run) is deliberately deferred to 3.0d. In
+3.0c the bridge thread just logs and continues so it survives.
 
-Tests land in 3.4 (`tests/test_converse.py`) once `claude_runner_factory`
-(3.0c) gives us a stable surface to fake against. The session helpers
-are testable in isolation now, but we'll bundle them into the 3.4 pass.
+## 3.0c verification (done)
 
-## Immediate next step: 3.0c — Wire `claude -p` into the bridge
+- Unit-style in-process test (no mic, fake runner) exercised all six
+  branches: fresh happy path, id-carry to turn 2, is_error skip,
+  non-zero exit skip, non-JSON stdout skip, runner-raises swallow,
+  matched-id no-rewrite.
+- `uv run python cli.py converse --help` still renders; `CliContext`
+  carries the new factory with the correct annotations.
+- Live tests (all three): fresh (no flags), throwaway-dir attach via
+  `--session-id`, same-session resume. All three round-trip STT →
+  bridge → `claude -p` → TTS successfully. First live attempt hit an
+  `is_error=true` race from concurrent turns against the same session
+  (user was typing in claude-code interactively while `cai converse`
+  was also injecting turns) — a re-run succeeded. Rich `is_error`
+  logging added in response to that incident.
+
+### Known sharp edge (not a 3.0c bug)
+
+Voicing into the **same** Claude Code session the user is actively
+typing to elsewhere can race. `claude -p --resume` serialises turns
+server-side but a refused/errored turn surfaces as `is_error=true` and
+the bridge swallows it with a log. 3.0d will make this visible (speak
+a failure tone or short phrase). Not worth a fix in 3.0c.
+
+## Tests NOT written for 3.0c (intentional)
+
+Tests land in 3.4 (`tests/test_converse.py`). The `claude_runner_factory`
+test seam is now in place so tests can hand in a fake runner and assert
+against `agent.txt` / the session state file. Will bundle 3.0a/b/c/d/e
+into one test module in 3.4.
+
+## Immediate next step: 3.0d — Error handling
 
 Scope (from TODO.md and plan):
 
-1. Add `claude_runner_factory: Callable[..., subprocess.CompletedProcess]`
-   (or similar typed alias) to `src/cli/__init__.py:CliContext` with a
-   default that actually shells out. This is the test seam.
-2. Default runner invokes:
-   `claude -p "<line>" --resume <id> --output-format json`
-   via `subprocess.run(..., capture_output=True, text=True, timeout=…)`.
-3. Replace the 3.0a/b echo body in `_make_bridge_callback` with:
-   - call the runner,
-   - parse JSON output (shape TBD — check `--output-format json` schema
-     live; likely `{"result": "…", "session_id": "…", ...}`),
-   - append the result text to `agent_path`,
-   - if the response carries a session id (new session case, no prior
-     `--session-id` was passed), capture and persist it via
-     `_write_last_session_id`.
-4. Keep `--resume <id>` only when a resolved id exists. For a fresh
-   session, first turn runs `claude -p "<line>"` (no `--resume`), then
-   subsequent turns use the captured id.
-5. Pre-flight check in the command body (before threads): verify
-   `shutil.which("claude")` and fail fast with `click.ClickException` if
-   missing. (This is technically 3.0d's "missing binary" case but it's
-   cheap and belongs at startup, so lift it now.)
+1. **`subprocess.TimeoutExpired`** — the 300s timeout on
+   `_default_claude_runner` already raises. 3.0c swallows it in the
+   bridge. 3.0d: log it, speak "claude turn timed out" (or similar
+   short phrase) via the agent file, keep the bridge alive. Do **not**
+   shutdown — timeouts are recoverable.
+2. **Non-zero exit** — currently logged and skipped. Per plan:
+   speak "session ended" and set `shutdown` event so all three threads
+   exit cleanly. Rationale: non-zero usually means the session is
+   unrecoverable (invalid resume id, quota, auth).
+3. **`is_error=true`** — similar to non-zero? Or treat as recoverable
+   (just log, skip, continue)? Decision needed. Leaning: recoverable
+   if `subtype == "error_during_execution"` but unrecoverable if
+   `permission_denials` or `api_error_status` is set. Confirm with the
+   user before coding.
+4. **Missing `claude` binary mid-run** — `FileNotFoundError` from
+   `subprocess.run`. Treat as unrecoverable: speak "claude binary
+   gone" and shutdown. Startup pre-flight already covers the common
+   case.
+5. **Helper:** consider a small `_speak_error(agent_path, phrase)`
+   that just appends the phrase to `agent.txt` so the existing watcher
+   path handles TTS. Keeps the bridge thread from having to talk to
+   the TTS pipeline directly.
 
-Open questions to answer empirically before coding:
+Open questions to answer before coding:
 
-- What does `claude -p "hello" --output-format json` actually emit?
-  Confirm the JSON schema — keys for result text, session id, success
-  flag, stop reason. Run once by hand in a throwaway dir before writing
-  the parser.
-- Does `--resume <unknown-id>` error or silently start fresh? Probe
-  result will inform 3.0d error copy.
-- Stdin? Plan says pass the prompt as `-p "<text>"`, not stdin. Confirm
-  that's still the supported surface.
-
-No error handling beyond the pre-flight in 3.0c. Timeout, nonzero exit,
-and mid-session failure land in 3.0d.
+- Should timeouts use the same "append to agent.txt" trick to voice
+  the error, or a separate channel? (Probably same — consistent and
+  simple.)
+- What phrase for each failure mode? User may want to customise.
+  Default: "session ended" (non-zero, fatal) / "turn timed out"
+  (recoverable) / "claude binary missing" (fatal).
+- Do we want a `--max-timeouts N` knob so repeated timeouts escalate
+  to shutdown? Probably not in 3.0d scope; defer to post-3.0e polish.
 
 ## Key architectural decisions (unchanged; restated for continuity)
 
 - **Session resolution (Q4):** `--session-id`, `--resume`, default
   fresh — all three shipped in 3.0b.
 - **Backend:** `claude -p "<line>" --resume <id> --output-format json`
-  per turn.
+  per turn — shipped in 3.0c.
 - **Validation:** startup probe → exit 1 on invalid (done in 3.0b).
   Mid-session nonzero exit → "session ended" TTS + shutdown (3.0d).
 - **Blocking in v1** (Q5); streaming on roadmap.
@@ -122,15 +165,14 @@ and mid-session failure land in 3.0d.
 
 ## Remaining implementation sequence
 
-- **3.0c** ← start here: wire `claude -p --resume <id>`; add
-  `claude_runner_factory`; persist resolved id on success.
-- **3.0d:** error handling (subprocess timeout, nonzero exit, missing
-  `claude` binary at runtime).
+- **3.0d** ← start here: error handling (subprocess timeout, nonzero
+  exit with "session ended" + shutdown, missing-binary mid-run).
 - **3.0e:** wake-word gating via `build_wake_gate`.
 - **3.1:** three SKILL.md files.
 - **3.2:** `cai install-skill` / `cai uninstall-skill`.
 - **3.3:** PATH check (`shutil.which("cai")`) in installer.
-- **3.4:** tests.
+- **3.4:** tests (including all 3.0a-e branches against the
+  `claude_runner_factory` test seam).
 - **3.5:** docs sweep.
 
 ## Reused primitives (no changes needed)
@@ -140,16 +182,18 @@ and mid-session failure land in 3.0d.
 - `src/cli/watch.py:TextFileHandler`
 - `src/cli/wake_word.py:build_wake_gate` (not used until 3.0e)
 
-## Files that will be touched in 3.0c
+## Files that will be touched in 3.0d
 
 **Modified:**
-- `src/cli/__init__.py` — add `claude_runner_factory` field to
-  `CliContext` with a sensible default.
-- `src/cli/converse.py` — swap echo body for real subprocess call;
-  parse JSON; capture/persist session id on success; add `shutil.which`
-  startup check.
+- `src/cli/converse.py` — expand the bridge callback's error branches:
+  separate the recoverable (timeout, recoverable is_error) from the
+  fatal (nonzero exit, missing binary, fatal is_error). Add shutdown
+  trigger on fatal branches. Use a small helper that appends an error
+  phrase to `agent.txt` so TTS speaks it via the existing watcher.
 
-**Unchanged in 3.0c:**
+**Unchanged in 3.0d:**
+- `src/cli/__init__.py` — runner factory already typed correctly;
+  timeout is already baked in.
 - `cli.py` — already wired.
 - `install.sh` — shim already correct.
 - Docs — deferred to 3.5.
@@ -161,32 +205,43 @@ and mid-session failure land in 3.0d.
   testing `cai converse`. Shim at `~/.local/bin/cai` runs the installed
   copy, not the dev tree.
 - **Pause between tasks:** user wants a checkpoint after each phase —
-  do not autonomously chain 3.0c → 3.0d.
+  do not autonomously chain 3.0d → 3.0e.
 - **User drives commits.** Don't run `git commit`.
 - **Shared test helpers** go in `tests/_<topic>.py` plain modules.
 
 ## Current git state
 
-- Branch: `main`
-- Uncommitted changes across 3.0a + 3.0b (all in working tree):
-  - New: `src/cli/converse.py`
-  - Modified: `cli.py`, `src/cli/__init__.py`, `install.sh`, `tasks/TODO.md`
-- Pre-existing uncommitted (from earlier sessions):
-  `tasks/TASK-REFINEMENT.md`, `tasks/CONTINUITY.md`, `CONTRIBUTING.md`.
-- The user has not asked for a commit yet.
+- Branch: `main` (up to date with origin/main).
+- 3.0a + 3.0b already committed (recent commits include `9edc9d6` "AI
+  skill development and integration glue" and `aecbaf1` "Working on
+  the skill and persistent conversational support structures").
+- Uncommitted (3.0c only):
+  - `M src/cli/__init__.py` — `_default_claude_runner` +
+    `claude_runner_factory` field.
+  - `M src/cli/converse.py` — bridge subprocess wiring + rich
+    `is_error` log.
+  - `M tasks/TODO.md` — 3.0c box checked with live-test note.
+  - `M tasks/CONTINUITY.md` — this file.
+- No untracked files.
+- User has not asked for a commit yet. Don't run `git commit`
+  autonomously.
 
 ## Next action after new session starts
 
 1. Read this file (CONTINUITY.md) first.
-2. Skim `src/cli/converse.py` to re-orient on current shape.
-3. Empirically probe `claude -p "…" --output-format json` output in a
-   throwaway directory before writing the parser.
-4. Start **3.0c**: wire the subprocess call. Keep diff minimal. Don't
-   touch tests or docs. Pause for user review when runnable.
+2. Skim `src/cli/converse.py` to re-orient — especially the bridge
+   callback's current error branches (log-and-continue across all
+   failure modes).
+3. Confirm with user: is_error classification (recoverable vs fatal)
+   and the exact phrases to speak on each failure.
+4. Start **3.0d**: refine the bridge callback's error handling.
+   Keep diff minimal. Don't touch tests or docs. Pause for user review
+   when runnable.
 
 ## Out-of-scope right now
 
 - Don't touch Features 4, 7, 8, or BUGS.md.
 - The pre-existing B5.1 F401 in `tests/test_config.py:3` stays deferred.
-- Don't start 3.0d/3.0e in the same session as 3.0c.
-- Don't add timeout or error-path handling — that's 3.0d.
+- Don't start 3.0e in the same session as 3.0d.
+- Don't add wake-word gating — that's 3.0e.
+- Don't write tests — that's 3.4.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,14 +19,36 @@ if TYPE_CHECKING:
     from src.cli.audio_io import MicRecorder
 
 
+_CLAUDE_HEADLESS_TIMEOUT_SECONDS = 300.0
+
+
+def _default_claude_runner(
+    prompt: str, session_id: str | None
+) -> subprocess.CompletedProcess[str]:
+    """Invoke `claude -p <prompt> [--resume <id>] --output-format json`.
+
+    Default for `CliContext.claude_runner_factory`. Tests swap this out with
+    a fake that returns a pre-built `CompletedProcess`.
+    """
+    argv = ["claude", "-p", prompt, "--output-format", "json"]
+    if session_id:
+        argv += ["--resume", session_id]
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=_CLAUDE_HEADLESS_TIMEOUT_SECONDS,
+    )
+
+
 @dataclass
 class CliContext:
     """Shared state passed via Click's ctx.obj to every subcommand.
 
-    `recorder_factory` and `speaker_factory` are the test seams: subcommands
-    call these instead of importing `mic_recorder_from_settings` /
-    `play_tts_streaming` directly, so tests override one attribute on
-    `ctx.obj` rather than chasing module-level patch targets.
+    `recorder_factory`, `speaker_factory`, and `claude_runner_factory` are
+    test seams: subcommands call these instead of importing the underlying
+    helpers directly, so tests override one attribute on `ctx.obj` rather
+    than chasing module-level patch targets.
     """
 
     settings: Settings
@@ -34,6 +57,9 @@ class CliContext:
         default=mic_recorder_from_settings
     )
     speaker_factory: Callable[..., None] = field(default=play_tts_streaming)
+    claude_runner_factory: Callable[
+        [str, str | None], subprocess.CompletedProcess[str]
+    ] = field(default=_default_claude_runner)
 
 
 # Subcommand → (needs_tts, needs_stt). `serve` loads models inside its FastAPI
