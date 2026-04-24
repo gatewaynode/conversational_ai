@@ -67,6 +67,21 @@ def _write_last_session_id(session_id: str) -> None:
         logger.exception("Failed to write session state %s", _SESSION_STATE_FILE)
 
 
+def _speak_error(agent_path: Path, phrase: str) -> None:
+    """Append `phrase` to the agent file so the watcher voices it via TTS.
+
+    Used for recoverable bridge errors (timeout, JSON decode, is_error)
+    where the bridge keeps running. Fatal branches voice their phrase
+    synchronously through the speak callback instead, so the audio is
+    out before `shutdown` propagates and the watcher tears down.
+    """
+    try:
+        with agent_path.open("a", encoding="utf-8") as f:
+            f.write(phrase + "\n")
+    except OSError:
+        logger.exception("Failed to append error phrase to agent file %s", agent_path)
+
+
 def _probe_session(session_id: str) -> None:
     """Raise ClickException if `session_id` has no transcript in this cwd."""
     transcript = _CLAUDE_PROJECTS / _cwd_slug() / f"{session_id}.jsonl"
@@ -105,15 +120,24 @@ def _make_bridge_callback(
     shutdown: threading.Event,
     session_id: str | None,
     runner: Callable[[str, str | None], subprocess.CompletedProcess[str]],
+    speak_fatal: Callable[[str], None],
 ) -> Callable[[str], None]:
     """Build the bridge on_text callback.
 
     Each transcribed line is sent to `claude -p` via `runner`; the JSON
     `result` field is appended to the agent file and the returned
     `session_id` is captured so the fresh-session case threads an id
-    across subsequent turns. Robust error handling (timeouts, nonzero
-    exits, missing binary mid-run) is deferred to 3.0d — here we log and
-    continue so the bridge thread survives.
+    across subsequent turns.
+
+    Failure modes split into recoverable (log, voice a phrase via the
+    agent file, keep running) and fatal (voice synchronously through
+    `speak_fatal`, set `shutdown` to stop all three threads):
+
+    - Recoverable: `subprocess.TimeoutExpired`, runner raised, non-JSON
+      stdout, `is_error=true` in the payload.
+    - Fatal: non-zero exit (session unrecoverable — invalid resume id,
+      auth, quota), `FileNotFoundError` from runner (claude binary
+      disappeared after the startup pre-flight).
     """
     current_session_id = session_id
 
@@ -130,8 +154,18 @@ def _make_bridge_callback(
 
             try:
                 proc = runner(line, current_session_id)
+            except subprocess.TimeoutExpired:
+                logger.warning("claude turn timed out on prompt %r", line)
+                _speak_error(agent_path, "Claude turn timed out.")
+                continue
+            except FileNotFoundError:
+                logger.error("claude binary missing mid-run on prompt %r", line)
+                speak_fatal("Claude command not found.")
+                shutdown.set()
+                return
             except Exception:
                 logger.exception("claude runner raised on prompt %r", line)
+                _speak_error(agent_path, "Claude returned an error.")
                 continue
 
             if proc.returncode != 0:
@@ -140,7 +174,9 @@ def _make_bridge_callback(
                     proc.returncode,
                     (proc.stderr or "")[:500],
                 )
-                continue
+                speak_fatal("Session ended.")
+                shutdown.set()
+                return
 
             try:
                 payload = json.loads(proc.stdout or "")
@@ -149,6 +185,7 @@ def _make_bridge_callback(
                     "claude stdout was not JSON: %s",
                     (proc.stdout or "")[:500],
                 )
+                _speak_error(agent_path, "Claude returned an error.")
                 continue
 
             if payload.get("is_error"):
@@ -161,6 +198,7 @@ def _make_bridge_callback(
                     payload.get("permission_denials"),
                     payload.get("result"),
                 )
+                _speak_error(agent_path, "Claude returned an error.")
                 continue
 
             result = (payload.get("result") or "").strip()
@@ -306,6 +344,7 @@ def converse(
         shutdown,
         resolved_session_id,
         ctx_obj.claude_runner_factory,
+        speak_cb,
     )
     human_handler = TextFileHandler(human_path, bridge_cb)
 
@@ -326,9 +365,7 @@ def converse(
     )
     listener_thread.start()
 
-    session_banner = (
-        f"session={resolved_session_id}" if resolved_session_id else "session=fresh"
-    )
+    session_banner = f"session={resolved_session_id}" if resolved_session_id else "session=fresh"
     click.echo(
         f"Converse active ({session_banner}) — "
         f"human→{human_path}, agent→{agent_path}. Ctrl+C to stop.",

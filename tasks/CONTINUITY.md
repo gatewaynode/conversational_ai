@@ -1,22 +1,24 @@
 # Continuity notes — Feature 3 implementation
 
-_Last updated: 2026-04-19 (pre-compact, after 3.0c live-test + rich
-is_error log). Delete this file after Feature 3 lands._
+_Last updated: 2026-04-24 (after 3.0d implementation, pre live-test).
+Delete this file after Feature 3 lands._
 
 ## Where we are
 
 - **Completed:** 3.0a (three-thread echo-back skeleton), 3.0b (session
   resolution: `--session-id`, `--resume`, mutex, state file, startup
-  probe), and **3.0c** (`claude -p` subprocess wired into the bridge
-  with JSON parsing, session-id capture/persist, `shutil.which("claude")`
-  pre-flight, `claude_runner_factory` test seam on `CliContext`). All
-  three live-tested by user.
-- **Next up:** 3.0d — error handling for subprocess failure modes
-  (timeout, non-zero exit, missing `claude` at runtime).
+  probe), **3.0c** (`claude -p` subprocess wired into the bridge with
+  JSON parsing, session-id capture/persist, `shutil.which("claude")`
+  pre-flight, `claude_runner_factory` test seam on `CliContext`), and
+  **3.0d** (split recoverable vs fatal failure handling — see below).
+  3.0a–c all live-tested. **3.0d not yet live-tested** — user needs to
+  run `./install.sh` then verify each branch.
+- **Next up:** 3.0e — wake-word gating via `build_wake_gate` (same
+  knobs as `listen` / `dialogue`).
 - **Mode:** out of plan mode, coding. Plan approved.
 - **Plan file:** `/Users/john/.claude/plans/stateful-stirring-pixel.md`
 - **Refinement answers:** `tasks/TASK-REFINEMENT.md`
-- **TODO sync:** `tasks/TODO.md` §Feature 3 updated — 3.0a/3.0b/3.0c
+- **TODO sync:** `tasks/TODO.md` §Feature 3 — 3.0a/3.0b/3.0c/3.0d
   boxes checked.
 
 ## What 3.0c shipped (uncommitted in the working tree)
@@ -108,43 +110,91 @@ test seam is now in place so tests can hand in a fake runner and assert
 against `agent.txt` / the session state file. Will bundle 3.0a/b/c/d/e
 into one test module in 3.4.
 
-## Immediate next step: 3.0d — Error handling
+## What 3.0d shipped (uncommitted in the working tree)
 
-Scope (from TODO.md and plan):
+### `src/cli/converse.py`
 
-1. **`subprocess.TimeoutExpired`** — the 300s timeout on
-   `_default_claude_runner` already raises. 3.0c swallows it in the
-   bridge. 3.0d: log it, speak "claude turn timed out" (or similar
-   short phrase) via the agent file, keep the bridge alive. Do **not**
-   shutdown — timeouts are recoverable.
-2. **Non-zero exit** — currently logged and skipped. Per plan:
-   speak "session ended" and set `shutdown` event so all three threads
-   exit cleanly. Rationale: non-zero usually means the session is
-   unrecoverable (invalid resume id, quota, auth).
-3. **`is_error=true`** — similar to non-zero? Or treat as recoverable
-   (just log, skip, continue)? Decision needed. Leaning: recoverable
-   if `subtype == "error_during_execution"` but unrecoverable if
-   `permission_denials` or `api_error_status` is set. Confirm with the
-   user before coding.
-4. **Missing `claude` binary mid-run** — `FileNotFoundError` from
-   `subprocess.run`. Treat as unrecoverable: speak "claude binary
-   gone" and shutdown. Startup pre-flight already covers the common
-   case.
-5. **Helper:** consider a small `_speak_error(agent_path, phrase)`
-   that just appends the phrase to `agent.txt` so the existing watcher
-   path handles TTS. Keeps the bridge thread from having to talk to
-   the TTS pipeline directly.
+- New `_speak_error(agent_path, phrase)` module helper: appends a
+  phrase to `agent.txt` so the agent watcher voices it via TTS.
+  Used by the recoverable bridge branches.
+- `_make_bridge_callback` gained a `speak_fatal: Callable[[str], None]`
+  parameter (the same `speak_cb` the agent watcher uses), threaded
+  in from `converse()`.
+- Bridge error branches:
+  - `subprocess.TimeoutExpired` → log warning, `_speak_error("Claude
+    turn timed out.")`, continue. Recoverable.
+  - `FileNotFoundError` → log error, `speak_fatal("Claude command not
+    found.")`, `shutdown.set()`, return. Fatal.
+  - Generic `Exception` from runner → log + `_speak_error("Claude
+    returned an error.")`, continue. Recoverable.
+  - Non-zero exit → log + `speak_fatal("Session ended.")`,
+    `shutdown.set()`, return. Fatal.
+  - JSON decode failure → log + `_speak_error("Claude returned an
+    error.")`, continue. Recoverable.
+  - `is_error=true` payload → existing rich log + `_speak_error("Claude
+    returned an error.")`, continue. Recoverable across the board per
+    user decision (no subtype-based fatal split).
 
-Open questions to answer before coding:
+### Why fatal voices synchronously instead of via the file watcher
 
-- Should timeouts use the same "append to agent.txt" trick to voice
-  the error, or a separate channel? (Probably same — consistent and
-  simple.)
-- What phrase for each failure mode? User may want to customise.
-  Default: "session ended" (non-zero, fatal) / "turn timed out"
-  (recoverable) / "claude binary missing" (fatal).
-- Do we want a `--max-timeouts N` knob so repeated timeouts escalate
-  to shutdown? Probably not in 3.0d scope; defer to post-3.0e polish.
+`_make_speak_callback` gates on `shutdown.is_set()` at entry and
+again after acquiring the inference lock. If the bridge appended a
+fatal phrase to `agent.txt` and immediately set `shutdown`, the
+watcher's poll cycle would fire on a closed shutdown gate and drop
+the phrase. Calling `speak_fatal(phrase)` synchronously from the
+bridge thread voices it before `shutdown` is set — the speak
+callback's lock keeps it serialised against the listener's STT
+inference, and `tts_active` flipping during playback gates the
+listener cleanly.
+
+### Recoverable phrases via the agent file (per continuity-doc plan)
+
+Recoverable errors don't set `shutdown`, so the existing watcher
+path is fine — phrase lands in `agent.txt`, watcher polls, speak
+callback runs unblocked. Keeps the bridge thin and reuses the same
+TTS pipeline as successful results.
+
+### Phrases (final)
+
+- Timeout (recoverable): `"Claude turn timed out."`
+- Recoverable other (runner raised / non-JSON / is_error):
+  `"Claude returned an error."`
+- Non-zero exit (fatal): `"Session ended."`
+- Missing `claude` binary mid-run (fatal): `"Claude command not
+  found."`
+
+### Deferred to post-3.0e polish (not in 3.0d)
+
+- `--max-timeouts N` knob to escalate repeated recoverable timeouts
+  to fatal shutdown. Out of 3.0d scope.
+
+## 3.0d verification (partial)
+
+- `uv run pytest -q` → 220 passed.
+- `uv run ruff format src/cli/converse.py` + `ruff check` clean.
+- `uv run python -c "from src.cli.converse import …"` imports OK.
+- `uv run python cli.py converse --help` renders the same option
+  surface (no flag changes in 3.0d).
+- **Live test pending.** User must `./install.sh` then exercise each
+  branch — the easiest fatal probe is `cai converse --session-id
+  00000000-0000-0000-0000-000000000000` (startup probe rejects this
+  before 3.0d kicks in, so for fatal the bridge needs a way to hit
+  non-zero exit mid-session — see "How to live-test" below).
+
+### How to live-test 3.0d
+
+- **Recoverable timeout:** monkey-patch the runner factory or stub
+  `subprocess.run` to raise `subprocess.TimeoutExpired`. Easier:
+  drop the timeout to ~5s and hand `claude -p` a long prompt.
+- **Recoverable is_error:** start two interactive `claude` sessions
+  on the same id and inject a turn from `cai converse` while the
+  other is mid-turn. (Same race that surfaced during 3.0c live-test.)
+- **Fatal non-zero exit:** point `--session-id` at a real id, then
+  delete the transcript file (or rename the cwd) so `claude -p`
+  exits with an error mid-session. Or break network / log out of
+  the Claude account between turns.
+- **Fatal missing binary:** rename `claude` on PATH after startup
+  succeeds and inject a turn.
 
 ## Key architectural decisions (unchanged; restated for continuity)
 
@@ -165,9 +215,8 @@ Open questions to answer before coding:
 
 ## Remaining implementation sequence
 
-- **3.0d** ← start here: error handling (subprocess timeout, nonzero
-  exit with "session ended" + shutdown, missing-binary mid-run).
-- **3.0e:** wake-word gating via `build_wake_gate`.
+- **3.0e** ← start here: wake-word gating via `build_wake_gate` (same
+  knobs as `listen` / `dialogue`).
 - **3.1:** three SKILL.md files.
 - **3.2:** `cai install-skill` / `cai uninstall-skill`.
 - **3.3:** PATH check (`shutil.which("cai")`) in installer.
@@ -180,24 +229,7 @@ Open questions to answer before coding:
 - `src/cli/dialogue.py:_listener_loop` (lines 84-174)
 - `src/cli/dialogue.py:_make_speak_callback` (lines 24-81)
 - `src/cli/watch.py:TextFileHandler`
-- `src/cli/wake_word.py:build_wake_gate` (not used until 3.0e)
-
-## Files that will be touched in 3.0d
-
-**Modified:**
-- `src/cli/converse.py` — expand the bridge callback's error branches:
-  separate the recoverable (timeout, recoverable is_error) from the
-  fatal (nonzero exit, missing binary, fatal is_error). Add shutdown
-  trigger on fatal branches. Use a small helper that appends an error
-  phrase to `agent.txt` so TTS speaks it via the existing watcher.
-
-**Unchanged in 3.0d:**
-- `src/cli/__init__.py` — runner factory already typed correctly;
-  timeout is already baked in.
-- `cli.py` — already wired.
-- `install.sh` — shim already correct.
-- Docs — deferred to 3.5.
-- Tests — deferred to 3.4.
+- `src/cli/wake_word.py:build_wake_gate` (slated for 3.0e)
 
 ## Key memory rules in force
 
@@ -211,37 +243,30 @@ Open questions to answer before coding:
 
 ## Current git state
 
-- Branch: `main` (up to date with origin/main).
-- 3.0a + 3.0b already committed (recent commits include `9edc9d6` "AI
-  skill development and integration glue" and `aecbaf1` "Working on
-  the skill and persistent conversational support structures").
-- Uncommitted (3.0c only):
-  - `M src/cli/__init__.py` — `_default_claude_runner` +
-    `claude_runner_factory` field.
-  - `M src/cli/converse.py` — bridge subprocess wiring + rich
-    `is_error` log.
-  - `M tasks/TODO.md` — 3.0c box checked with live-test note.
+- Branch: `main`. Last commit `96d7483` ("Changed 'dialogue' to
+  'converse' as commands.") shipped 3.0c.
+- Uncommitted (3.0d only):
+  - `M src/cli/converse.py` — `_speak_error` helper, `speak_fatal`
+    parameter on `_make_bridge_callback`, recoverable/fatal split.
+  - `M tasks/TODO.md` — 3.0d box checked with summary.
   - `M tasks/CONTINUITY.md` — this file.
 - No untracked files.
-- User has not asked for a commit yet. Don't run `git commit`
-  autonomously.
+- User drives commits. Don't run `git commit` autonomously.
 
 ## Next action after new session starts
 
 1. Read this file (CONTINUITY.md) first.
-2. Skim `src/cli/converse.py` to re-orient — especially the bridge
-   callback's current error branches (log-and-continue across all
-   failure modes).
-3. Confirm with user: is_error classification (recoverable vs fatal)
-   and the exact phrases to speak on each failure.
-4. Start **3.0d**: refine the bridge callback's error handling.
-   Keep diff minimal. Don't touch tests or docs. Pause for user review
-   when runnable.
+2. If 3.0d hasn't been live-tested yet, walk the user through the
+   four "How to live-test 3.0d" probes above before starting 3.0e.
+3. Start **3.0e**: wake-word gating in `converse` via
+   `build_wake_gate`. Mirror how `listen` and `dialogue` wire it up
+   (same knobs); `_listener_loop` already accepts a `wake_gate`
+   argument — `converse` currently passes `None` for it on line ~360.
 
 ## Out-of-scope right now
 
 - Don't touch Features 4, 7, 8, or BUGS.md.
 - The pre-existing B5.1 F401 in `tests/test_config.py:3` stays deferred.
-- Don't start 3.0e in the same session as 3.0d.
-- Don't add wake-word gating — that's 3.0e.
+- Don't start 3.1 in the same session as 3.0e.
 - Don't write tests — that's 3.4.
+- Don't write docs — that's 3.5.

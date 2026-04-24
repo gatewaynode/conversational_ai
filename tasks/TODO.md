@@ -422,8 +422,18 @@ to the agent file.
       (Test seam: `claude_runner_factory` on `CliContext`. Pre-flight
       `shutil.which("claude")`. Live-tested fresh / `--session-id` /
       `--resume` — all three return agent replies via TTS.)
-- [ ] **3.0d** Error handling: subprocess timeout, non-zero exit (speak
-      "session ended" + shutdown), missing `claude` binary (startup error).
+- [x] **3.0d** Error handling: split recoverable (timeout, runner
+      raised, non-JSON stdout, `is_error=true`) from fatal (non-zero
+      exit, mid-run `FileNotFoundError`). Recoverable phrases (`"Claude
+      turn timed out."` / `"Claude returned an error."`) flow through
+      a new `_speak_error` helper that appends to `agent.txt` so the
+      existing watcher voices them. Fatal phrases (`"Session ended."` /
+      `"Claude command not found."`) call `speak_cb` synchronously and
+      then set `shutdown` — the synchronous path avoids the speak
+      callback's shutdown gate dropping the phrase before it plays.
+      `_make_bridge_callback` gains a `speak_fatal: Callable[[str], None]`
+      parameter; `converse()` passes the existing `speak_cb`. Lint +
+      format clean, 220 tests still pass.
 - [ ] **3.0e** Wake-word gating via `build_wake_gate` (same knobs as
       `listen` / `dialogue`).
 - [ ] Register `converse` in `cli.py` and `MODEL_REQUIREMENTS` as
