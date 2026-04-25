@@ -28,6 +28,7 @@ import click
 from src.cli import CliContext
 from src.cli.audio_io import AudioDeviceError
 from src.cli.dialogue import _listener_loop, _make_speak_callback
+from src.cli.wake_word import build_wake_gate
 from src.cli.watch import TextFileHandler
 
 logger = logging.getLogger(__name__)
@@ -269,6 +270,38 @@ def _make_bridge_callback(
     default=None,
     help="Sample room tone at startup to set the effective threshold.",
 )
+@click.option(
+    "--wake-word",
+    "wake_word",
+    type=str,
+    default=None,
+    help="Enable wake-word gating with the given trigger (forces enabled=true).",
+)
+@click.option(
+    "--no-wake-word",
+    "no_wake_word",
+    is_flag=True,
+    default=False,
+    help="Disable wake-word gating regardless of config.",
+)
+@click.option(
+    "--wake-timeout",
+    type=float,
+    default=None,
+    help="Override wake-word open-window timeout in seconds.",
+)
+@click.option(
+    "--include-trigger/--strip-trigger",
+    "include_trigger",
+    default=None,
+    help="Keep or strip the trigger word from the emitted line.",
+)
+@click.option(
+    "--wake-alert/--no-wake-alert",
+    "wake_alert",
+    default=None,
+    help="Play or suppress the activation chime (stderr echo always fires).",
+)
 @click.pass_obj
 def converse(
     ctx_obj: CliContext,
@@ -280,6 +313,11 @@ def converse(
     mic_silence: float | None,
     mic_min_speech: float | None,
     calibrate_noise: bool | None,
+    wake_word: str | None,
+    no_wake_word: bool,
+    wake_timeout: float | None,
+    include_trigger: bool | None,
+    wake_alert: bool | None,
 ) -> None:
     """Voice-converse with Claude Code.
 
@@ -290,6 +328,9 @@ def converse(
     Claude Code must run from this cwd so transcripts resolve under
     ~/.claude/projects/<cwd-slug>/. Press Ctrl+C to stop.
     """
+    if wake_word is not None and no_wake_word:
+        raise click.UsageError("--wake-word and --no-wake-word are mutually exclusive.")
+
     if shutil.which("claude") is None:
         raise click.ClickException(
             "`claude` CLI not found on PATH. Install Claude Code "
@@ -330,6 +371,15 @@ def converse(
     except AudioDeviceError as exc:
         raise click.ClickException(str(exc)) from exc
 
+    wake_gate = build_wake_gate(
+        ctx_obj.settings.wake_word,
+        word_override=wake_word,
+        disable=no_wake_word,
+        timeout_override=wake_timeout,
+        include_trigger_override=include_trigger,
+        alert_sound_override=wake_alert,
+    )
+
     speak_cb = _make_speak_callback(
         ctx_obj,
         inference_lock,
@@ -358,7 +408,7 @@ def converse(
             None,
             tts_active,
             recorder,
-            None,
+            wake_gate,
         ),
         daemon=True,
         name="converse-listener",

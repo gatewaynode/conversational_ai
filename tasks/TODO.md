@@ -434,11 +434,21 @@ to the agent file.
       `_make_bridge_callback` gains a `speak_fatal: Callable[[str], None]`
       parameter; `converse()` passes the existing `speak_cb`. Lint +
       format clean, 220 tests still pass.
-- [ ] **3.0e** Wake-word gating via `build_wake_gate` (same knobs as
-      `listen` / `dialogue`).
-- [ ] Register `converse` in `cli.py` and `MODEL_REQUIREMENTS` as
+- [x] **3.0e** Wake-word gating: added the same five flags
+      (`--wake-word`, `--no-wake-word`, `--wake-timeout`,
+      `--include-trigger/--strip-trigger`, `--wake-alert/--no-wake-alert`)
+      and mutex check that `listen` and `dialogue` carry; built the
+      gate via `build_wake_gate(ctx_obj.settings.wake_word, ...)` and
+      passed it to `_listener_loop` (the slot already existed — 3.0a
+      just threaded `None`). Help text renders the new flags, mutex
+      check rejects `--wake-word X --no-wake-word`, lint + format
+      clean, 220 tests still pass.
+- [x] Register `converse` in `cli.py` and `MODEL_REQUIREMENTS` as
       `(True, True)`; add `claude_runner_factory: Callable` to `CliContext`
-      as the test seam for the subprocess call.
+      as the test seam for the subprocess call. (Shipped earlier as
+      part of 3.0c — `cli.py:18` adds the command, `src/cli/__init__.py:74`
+      lists the model requirements, and `_default_claude_runner` /
+      `claude_runner_factory` are on `CliContext`.)
 
 ### 3.1 Author the skill files
 

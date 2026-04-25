@@ -1,25 +1,24 @@
 # Continuity notes — Feature 3 implementation
 
-_Last updated: 2026-04-24 (after 3.0d implementation, pre live-test).
-Delete this file after Feature 3 lands._
+_Last updated: 2026-04-24 (after 3.0e implementation, pre live-test
+of 3.0d/3.0e). Delete this file after Feature 3 lands._
 
 ## Where we are
 
-- **Completed:** 3.0a (three-thread echo-back skeleton), 3.0b (session
-  resolution: `--session-id`, `--resume`, mutex, state file, startup
-  probe), **3.0c** (`claude -p` subprocess wired into the bridge with
-  JSON parsing, session-id capture/persist, `shutil.which("claude")`
-  pre-flight, `claude_runner_factory` test seam on `CliContext`), and
-  **3.0d** (split recoverable vs fatal failure handling — see below).
-  3.0a–c all live-tested. **3.0d not yet live-tested** — user needs to
-  run `./install.sh` then verify each branch.
-- **Next up:** 3.0e — wake-word gating via `build_wake_gate` (same
-  knobs as `listen` / `dialogue`).
+- **3.0 runtime is feature-complete in code.** 3.0a (skeleton),
+  3.0b (session resolution + state file), 3.0c (`claude -p` wired
+  in), 3.0d (recoverable vs fatal split), 3.0e (wake-word gating)
+  all implemented. The "Register converse + claude_runner_factory"
+  housekeeping bullet is also closed (shipped earlier with 3.0c).
+- 3.0a–c live-tested. **3.0d and 3.0e not yet live-tested** — user
+  needs to run `./install.sh` and verify (probe steps below).
+- **Next up:** 3.1 — author the three SKILL.md files
+  (`voice-mode`, `cai-dictation`, `cai-dialogue`) under `skills/`.
 - **Mode:** out of plan mode, coding. Plan approved.
 - **Plan file:** `/Users/john/.claude/plans/stateful-stirring-pixel.md`
 - **Refinement answers:** `tasks/TASK-REFINEMENT.md`
-- **TODO sync:** `tasks/TODO.md` §Feature 3 — 3.0a/3.0b/3.0c/3.0d
-  boxes checked.
+- **TODO sync:** `tasks/TODO.md` §Feature 3 — 3.0a/3.0b/3.0c/3.0d/3.0e
+  boxes checked, plus the housekeeping "Register converse" bullet.
 
 ## What 3.0c shipped (uncommitted in the working tree)
 
@@ -213,14 +212,46 @@ TTS pipeline as successful results.
 - **Skills in 3.1:** `voice-mode` (primary), `cai-dictation`,
   `cai-dialogue`.
 
+## What 3.0e shipped (uncommitted in the working tree)
+
+### `src/cli/converse.py`
+
+- New import: `from src.cli.wake_word import build_wake_gate`.
+- Five Click options copied verbatim from `dialogue` / `listen`:
+  `--wake-word`, `--no-wake-word`, `--wake-timeout`,
+  `--include-trigger/--strip-trigger`, `--wake-alert/--no-wake-alert`.
+- Mutex check at the top of `converse()`: `--wake-word X
+  --no-wake-word` → `UsageError`. Runs before the `claude` PATH check
+  so the failure is fast and free.
+- Gate built after recorder calibration (so settings + flag overrides
+  merge identically to the other subcommands), then passed as the
+  last positional arg to `_listener_loop` — replacing the `None` that
+  3.0a stubbed in.
+
+The 3.0 task block is now feature-complete. The "Register converse +
+claude_runner_factory" housekeeping bullet that hung off the bottom
+of 3.0 is also closed (it was already shipped with 3.0c).
+
+## 3.0e verification (partial)
+
+- `uv run pytest -q` → 220 passed.
+- `uv run ruff format/check src/cli/converse.py` clean.
+- `uv run python cli.py --no-tts --no-stt converse --help` shows all
+  five wake-word flags.
+- `uv run python cli.py --no-tts --no-stt converse --wake-word hey
+  --no-wake-word` exits non-zero with the expected mutex message.
+- **Live test pending** — easiest probe: set `wake_word.enabled=true`
+  in the config (or pass `--wake-word "hey claude"`) and confirm
+  utterances without the trigger don't reach `claude -p`. Mirror the
+  matrix already validated for `dialogue` / `listen`.
+
 ## Remaining implementation sequence
 
-- **3.0e** ← start here: wake-word gating via `build_wake_gate` (same
-  knobs as `listen` / `dialogue`).
-- **3.1:** three SKILL.md files.
+- **3.1** ← start here: three SKILL.md files (`voice-mode`,
+  `cai-dictation`, `cai-dialogue`) under a new `skills/` directory.
 - **3.2:** `cai install-skill` / `cai uninstall-skill`.
 - **3.3:** PATH check (`shutil.which("cai")`) in installer.
-- **3.4:** tests (including all 3.0a-e branches against the
+- **3.4:** tests (all 3.0a-e branches against the
   `claude_runner_factory` test seam).
 - **3.5:** docs sweep.
 
@@ -229,7 +260,7 @@ TTS pipeline as successful results.
 - `src/cli/dialogue.py:_listener_loop` (lines 84-174)
 - `src/cli/dialogue.py:_make_speak_callback` (lines 24-81)
 - `src/cli/watch.py:TextFileHandler`
-- `src/cli/wake_word.py:build_wake_gate` (slated for 3.0e)
+- `src/cli/wake_word.py:build_wake_gate` (now wired into converse).
 
 ## Key memory rules in force
 
@@ -237,7 +268,7 @@ TTS pipeline as successful results.
   testing `cai converse`. Shim at `~/.local/bin/cai` runs the installed
   copy, not the dev tree.
 - **Pause between tasks:** user wants a checkpoint after each phase —
-  do not autonomously chain 3.0d → 3.0e.
+  do not autonomously chain 3.0e → 3.1.
 - **User drives commits.** Don't run `git commit`.
 - **Shared test helpers** go in `tests/_<topic>.py` plain modules.
 
@@ -245,10 +276,12 @@ TTS pipeline as successful results.
 
 - Branch: `main`. Last commit `96d7483` ("Changed 'dialogue' to
   'converse' as commands.") shipped 3.0c.
-- Uncommitted (3.0d only):
+- Uncommitted (3.0d + 3.0e):
   - `M src/cli/converse.py` — `_speak_error` helper, `speak_fatal`
-    parameter on `_make_bridge_callback`, recoverable/fatal split.
-  - `M tasks/TODO.md` — 3.0d box checked with summary.
+    parameter on `_make_bridge_callback`, recoverable/fatal split,
+    plus the five wake-word flags + `build_wake_gate` wiring.
+  - `M tasks/TODO.md` — 3.0d, 3.0e, and the housekeeping
+    "Register converse" bullet checked.
   - `M tasks/CONTINUITY.md` — this file.
 - No untracked files.
 - User drives commits. Don't run `git commit` autonomously.
@@ -256,17 +289,16 @@ TTS pipeline as successful results.
 ## Next action after new session starts
 
 1. Read this file (CONTINUITY.md) first.
-2. If 3.0d hasn't been live-tested yet, walk the user through the
-   four "How to live-test 3.0d" probes above before starting 3.0e.
-3. Start **3.0e**: wake-word gating in `converse` via
-   `build_wake_gate`. Mirror how `listen` and `dialogue` wire it up
-   (same knobs); `_listener_loop` already accepts a `wake_gate`
-   argument — `converse` currently passes `None` for it on line ~360.
+2. If 3.0d / 3.0e haven't been live-tested yet, walk the user through
+   the probe steps above before starting 3.1.
+3. Start **3.1**: author `skills/voice-mode/SKILL.md`,
+   `skills/cai-dictation/SKILL.md`, and `skills/cai-dialogue/SKILL.md`.
+   See TODO.md §3.1 for the style guide and required frontmatter.
 
 ## Out-of-scope right now
 
 - Don't touch Features 4, 7, 8, or BUGS.md.
 - The pre-existing B5.1 F401 in `tests/test_config.py:3` stays deferred.
-- Don't start 3.1 in the same session as 3.0e.
+- Don't start 3.2 in the same session as 3.1.
 - Don't write tests — that's 3.4.
 - Don't write docs — that's 3.5.
