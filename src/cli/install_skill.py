@@ -15,6 +15,7 @@ _MODE_TO_DIR: dict[str, str] = {
     "voice-mode": "voice-mode",
     "dictation": "cai-dictation",
     "dialogue": "cai-dialogue",
+    "audio-summary": "audio-summary",
 }
 
 _DEFAULT_TARGET = Path("~/.claude/skills").expanduser()

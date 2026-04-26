@@ -478,8 +478,9 @@ trigger appropriately, short enough to keep loadout costs low).
 ### 3.2 Installer subcommand
 
 - [ ] New `src/cli/install_skill.py` implementing `cai install-skill`.
-- [ ] Flags: `--mode voice-mode|dictation|dialogue|all` (default `all`),
-      `--target DIR` (default `~/.claude/skills`), `--force` (overwrite).
+- [ ] Flags: `--mode voice-mode|dictation|dialogue|audio-summary|all`
+      (default `all`), `--target DIR` (default `~/.claude/skills`),
+      `--force` (overwrite). (`audio-summary` added in 3.2.5.)
 - [ ] Copy `skills/<mode>/` into `<target>/<mode>/` idempotently.
       If target exists and `--force` not set, print a diff-style message
       and exit non-zero.
@@ -487,6 +488,28 @@ trigger appropriately, short enough to keep loadout costs low).
       both from the repo and from the installed copy at
       `~/.local/share/conversational_ai`.
 - [ ] `cai uninstall-skill [--mode …]` for symmetry.
+
+### 3.2.5 audio-summary skill (slipped in 2026-04-26)
+
+Fourth Claude Code skill — a one-shot spoken status pip Claude
+triggers from the terminal at section boundaries and before idling
+for user input. Lives outside `cai converse`; CLAUDE.md or
+per-session instructions decide when Claude reaches for it.
+
+- [ ] Author `skills/audio-summary/SKILL.md` — opt-in description,
+      tight body covering invocation (`cai speak "<text>"`), when to
+      fire, ≤2-sentence length budget, "skip during cai converse"
+      rule, "no code/stack traces aloud" rule, best-effort failure
+      handling.
+- [ ] Add `"audio-summary": "audio-summary"` to `_MODE_TO_DIR` in
+      `src/cli/install_skill.py`. `click.Choice` and `--mode all`
+      pick up the new entry automatically.
+- [ ] Smoke: `cai install-skill --help` lists `audio-summary`;
+      `cai install-skill --mode audio-summary --target /tmp/skills-x`
+      drops only `audio-summary/`; `--mode all --target
+      /tmp/skills-test` produces four subdirs.
+- [ ] Live audio test deferred — bundled with the §3.1
+      post-install validation after the project-level install lands.
 
 ### 3.3 PATH resolution
 

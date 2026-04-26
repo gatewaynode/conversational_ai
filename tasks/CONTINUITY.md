@@ -1,8 +1,7 @@
 # Continuity notes — Feature 3 implementation
 
-_Last updated: 2026-04-24 (pre-compact, after 3.1 SKILL.md authoring,
-poised to start 3.2 — `cai install-skill`). Delete this file after
-Feature 3 lands._
+_Last updated: 2026-04-26 (after 3.2 ship + 3.2.5 audio-summary
+skill authoring). Delete this file after Feature 3 lands._
 
 ## Where we are
 
@@ -11,41 +10,51 @@ Feature 3 lands._
   - `e17c088` "Better error handling in converse command" → 3.0d.
   - `96d7483` "Changed 'dialogue' to 'converse' as commands." → 3.0c.
   - 3.0a / 3.0b / housekeeping bullet shipped earlier.
-- **3.1 skills authored, NOT YET COMMITTED.** Three SKILL.md files
-  under `skills/<name>/SKILL.md` (`voice-mode` 42 lines,
-  `cai-dictation` 46 lines, `cai-dialogue` 61 lines). Frontmatter
-  validated by an inline YAML check this session.
+- **3.1 + 3.2.5 skills authored, NOT YET COMMITTED.** Four SKILL.md
+  files under `skills/<name>/SKILL.md` — `voice-mode`, `cai-dictation`,
+  `cai-dialogue` (3.1), and `audio-summary` (3.2.5: spoken status
+  pip Claude triggers from the terminal between sections; opt-in
+  via user phrase, skips during `cai converse`).
+- **3.2 shipped.** `src/cli/install_skill.py` + registration in
+  `cli.py` and `MODEL_REQUIREMENTS`; `cai install-skill` and
+  `cai uninstall-skill` work with `--mode voice-mode|dictation|
+  dialogue|audio-summary|all`, `--target DIR`, `--force`. Smoke
+  matrix all green (fresh install, conflict-without-force,
+  --force overwrite, --mode subset, uninstall, repeat-uninstall
+  no-op). Source resolution diverges from the `importlib.resources`
+  hint — uses `Path(__file__).resolve().parents[2] / "skills"`
+  instead, since `skills/` lives at the project root, not inside a
+  Python package.
 - **Live-test status:** 3.0a–c live-tested by the user during their
-  respective phases. **3.0d, 3.0e, and the skills are NOT yet
+  respective phases. **3.0d, 3.0e, and all four skills are NOT yet
   live-tested.** See "Pending live tests" below for probe scripts.
 - **Installer up-to-date as of this session.** `./install.sh` ran
   cleanly; the new `skills/` directory was copied to
   `~/.local/share/conversational_ai/skills/` (verified — three
   subdirs present). The shim at `~/.local/bin/cai` runs the latest
   build.
-- **Interrupted intent:** user asked to "install the skills in this
-  project" (project-level `.claude/skills/<name>/`) right before
-  the compact. I had verified the project's `.claude/` exists with
-  only `settings.local.json` in it, and that `~/.claude/skills/`
-  currently holds just `safe-fetch`. The manual copy was not
-  performed — proceed straight to 3.2 (which makes the manual
-  step obsolete) and drive the same outcome through `cai
-  install-skill --target .claude/skills` or similar once shipped.
+- **Pending: project-level install of the four skills.** The
+  installer is now shipped; the original "install the skills in
+  this project" intent resolves to one command run from the repo
+  root: `cai install-skill --target .claude/skills`. Not yet
+  executed — paused for user review before any commit and before
+  this install. The user's `.claude/` had only `settings.local.json`
+  the last time it was checked; `~/.claude/skills/` had only
+  `safe-fetch`.
 
 ## Next action after compact
 
 1. Read this file (CONTINUITY.md).
-2. Skim `skills/voice-mode/SKILL.md`, `skills/cai-dictation/SKILL.md`,
-   `skills/cai-dialogue/SKILL.md` to re-orient on what the installer
-   has to copy.
-3. Start **3.2** — `cai install-skill` / `cai uninstall-skill`. See
-   "3.2 spec" below; do not re-derive from the plan unless something
-   is unclear.
-4. After 3.2 lands and tests pass, install the three skills into
-   `.claude/skills/` (project-level, since the user asked for "in
-   this project") via the new subcommand. That replaces the manual
-   copy step that was interrupted.
-5. Pause for user review before starting 3.3.
+2. Skim the four `skills/<name>/SKILL.md` files (`voice-mode`,
+   `cai-dictation`, `cai-dialogue`, `audio-summary`) to re-orient.
+3. Pause for user review of 3.2 + 3.2.5 before any commit, before the
+   project-level install, and before starting 3.3 / 3.4 / 3.5 or any
+   pending live test.
+4. When the user gives the go-ahead, run
+   `cai install-skill --target .claude/skills` from the repo root —
+   that resolves the original "install the skills in this project"
+   intent and replaces the manual copy step that was interrupted.
+5. The §3.2 spec below stays as historical record; 3.2 is shipped.
 
 ## 3.2 spec — `cai install-skill` / `cai uninstall-skill`
 
@@ -199,6 +208,12 @@ final flag surface is), open Claude Code in this repo:
   with one file feeding the speaker and another collecting my
   voice" — Claude should propose `cai dialogue --speak-file …
   --listen-file …`.
+- Trigger `audio-summary` by telling Claude in a non-converse
+  session "give me audio summaries while you work" or similar.
+  After Claude finishes the next discrete unit of work it should
+  invoke `cai speak "<≤2 sentences>"` and continue. Confirm: pip
+  fires once per section (not per file), is short, doesn't read
+  code aloud, and skips when you switch to `cai converse`.
 
 If a description doesn't trigger reliably, tighten its phrasing —
 the body content is more forgiving than the description.
