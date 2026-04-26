@@ -452,23 +452,28 @@ to the agent file.
 
 ### 3.1 Author the skill files
 
-- [ ] Create `skills/` directory in the repo.
-- [ ] `skills/voice-mode/SKILL.md` — primary skill; Claude auto-loads when
-      invoked via `cai converse`. Style guide: short declarative sentences,
-      no markdown tables or code fences in the default path, verbal error
-      handling ("that didn't work, here's why"), minimal clarifying
-      questions (voice round-trips are slow), accessibility notes.
-      Document the "don't type in the terminal while voice mode is active"
-      constraint.
-- [ ] `skills/cai-dictation/SKILL.md` — frontmatter + instructions for when
-      Claude should invoke `cai listen` / `cai transcribe` on the user's
-      behalf (e.g., "when the user asks to dictate to a file", "when they
-      ask for voice input").
-- [ ] `skills/cai-dialogue/SKILL.md` — frontmatter + instructions for
-      driving `cai dialogue`, explaining the two-file contract and the
-      duplex modes (barge-in / full-duplex matrix).
-- [ ] Each SKILL.md explains: prerequisites (`cai` on PATH), config hints
-      (where to set wake word, noise floor), and example invocations.
+- [x] Create `skills/` directory in the repo.
+- [x] `skills/voice-mode/SKILL.md` (42 lines) — style guide for voice
+      replies: short declarative sentences, no tables/code/bullets in
+      the default path, verbal error handling, minimal clarifying
+      questions, "don't type in the terminal while voice mode is
+      active" constraint, Ctrl+C / `--resume` exit story.
+- [x] `skills/cai-dictation/SKILL.md` (46 lines) — frontmatter +
+      `cai transcribe` (one-shot) vs `cai listen` (continuous)
+      decision guide, wake-word note (transcribe doesn't take wake
+      flags; suggest `cai listen --wake-word X` for gated single
+      shot), mic-tuning knobs, "you cannot Ctrl+C for the user" caveat.
+- [x] `skills/cai-dialogue/SKILL.md` (61 lines) — two-file contract
+      (speak file write→TTS, listen file mic→write), full
+      barge_in×full_duplex matrix, wake-word flags, common-mistake
+      callout (don't run alongside `cai converse` on shared hardware;
+      don't point both processes at the same file).
+- [x] Each SKILL.md covers prerequisites (`cai` on PATH, mic/STT/TTS
+      models), config hints, and example invocations.
+
+Frontmatter validated: all three parse as valid YAML, `name` matches
+the directory, descriptions 230–320 chars each (specific enough to
+trigger appropriately, short enough to keep loadout costs low).
 
 ### 3.2 Installer subcommand
 

@@ -22,9 +22,7 @@ if TYPE_CHECKING:
 _CLAUDE_HEADLESS_TIMEOUT_SECONDS = 300.0
 
 
-def _default_claude_runner(
-    prompt: str, session_id: str | None
-) -> subprocess.CompletedProcess[str]:
+def _default_claude_runner(prompt: str, session_id: str | None) -> subprocess.CompletedProcess[str]:
     """Invoke `claude -p <prompt> [--resume <id>] --output-format json`.
 
     Default for `CliContext.claude_runner_factory`. Tests swap this out with
@@ -53,13 +51,11 @@ class CliContext:
 
     settings: Settings
     mm: ModelManager | None
-    recorder_factory: Callable[..., MicRecorder] = field(
-        default=mic_recorder_from_settings
-    )
+    recorder_factory: Callable[..., MicRecorder] = field(default=mic_recorder_from_settings)
     speaker_factory: Callable[..., None] = field(default=play_tts_streaming)
-    claude_runner_factory: Callable[
-        [str, str | None], subprocess.CompletedProcess[str]
-    ] = field(default=_default_claude_runner)
+    claude_runner_factory: Callable[[str, str | None], subprocess.CompletedProcess[str]] = field(
+        default=_default_claude_runner
+    )
 
 
 # Subcommand → (needs_tts, needs_stt). `serve` loads models inside its FastAPI
@@ -73,6 +69,8 @@ MODEL_REQUIREMENTS: dict[str, tuple[bool, bool]] = {
     "dialogue": (True, True),
     "converse": (True, True),
     "serve": (False, False),
+    "install-skill": (False, False),
+    "uninstall-skill": (False, False),
 }
 
 
@@ -105,9 +103,16 @@ def _build_overrides(
 @click.option("--tts-model", default=None, metavar="MODEL", help="TTS model name or path.")
 @click.option("--stt-model", default=None, metavar="MODEL", help="STT model name or path.")
 @click.option("--voice", default=None, metavar="VOICE", help="Default TTS voice.")
-@click.option("--speed", default=None, type=float, metavar="SPEED", help="Default TTS speed (0.1–5.0).")
+@click.option(
+    "--speed", default=None, type=float, metavar="SPEED", help="Default TTS speed (0.1–5.0)."
+)
 @click.option("--lang-code", default=None, metavar="CODE", help="Default TTS language code.")
-@click.option("--models-dir", default=None, metavar="DIR", help="Local models directory (default: ~/.lmstudio/models).")
+@click.option(
+    "--models-dir",
+    default=None,
+    metavar="DIR",
+    help="Local models directory (default: ~/.lmstudio/models).",
+)
 @click.option("--no-tts", is_flag=True, default=False, help="Skip loading the TTS model.")
 @click.option("--no-stt", is_flag=True, default=False, help="Skip loading the STT model.")
 @click.pass_context
