@@ -30,7 +30,7 @@ Don't fire mid-task. Don't fire on every tool call. Don't fire to acknowledge an
 
 ## Length budget
 
-≤ 30 seconds of audio. The pip exists to grab attention and carry enough context to be useful — not a monologue, but spend the budget when the message genuinely needs it: a hard error you can't work around, a question that requires technical setup, a summary that touches several files. Long-form details — full tracebacks, multi-step plans, code — still belong in the chat transcript where the user can scroll back.
+≤ 2 sentences. Aim for ≤ 10 seconds of audio. Long-form details belong in the chat transcript where the user can scroll back; the pip exists to grab attention, not to convey content.
 
 ## Don't fire during `cai converse`
 
